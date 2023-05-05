@@ -1,0 +1,4 @@
+numpy==1.19.5
+pyvista==0.33.2
+Splipy==1.5.7
+trimesh==3.14.1
