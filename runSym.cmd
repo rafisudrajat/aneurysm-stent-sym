@@ -1,5 +1,5 @@
 @echo off
-set "dir_param=experiment\experiment 8"
+set "dir_param=experiment\experiment 0"
 set "stent_pos1=outer"
 set "stent_pos2=inner"
 call script\constructAneuGeom.bat "%dir_param%"
