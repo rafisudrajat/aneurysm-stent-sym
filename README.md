@@ -12,7 +12,6 @@
 
   <p align="center">
     Simulation of deployment of double stent using Fast Virtual Stenting Algorithm.
-    The Algorithm to deploy and construct the stent in this project is based on 
     <br />
     <br />
     <a href="https://github.com/othneildrew/Best-README-Template/issues">Report Bug</a>
