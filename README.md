@@ -25,7 +25,7 @@
 <!-- ABOUT THE PROJECT -->
 ## About The Project
 
-This project was initialized by Narendra Kurnia Putra S.T, M.T., Ph.D. and <a href="https://www.linkedin.com/in/bonfilio-nainggolan-12508415a/">Bonfilio Nainggolan</a> as Bonfilio's undergraduate thesis project in 2021. Back then, the purpose of this project was to analyse the effect of flow diverter stent therapy using single stent lay  er and the result was published on <a href="https://ieeexplore.ieee.org/document/9624474">here</a>.
+This project was initialized by <a href="https://sites.google.com/view/narendkurnia/home?authuser=0">Narendra Kurnia Putra Ph.D.</a> and <a href="https://www.linkedin.com/in/bonfilio-nainggolan-12508415a/">Bonfilio Nainggolan</a> as Bonfilio's undergraduate thesis project in 2021. Back then, the purpose of this project was to analyse the effect of flow diverter stent therapy using single stent layer and the result was published on <a href="https://ieeexplore.ieee.org/document/9624474">here</a>.
 
 For further improvement, this project is extended to analyze the effect of double stent therapy using CFD.
 
@@ -34,28 +34,40 @@ For further improvement, this project is extended to analyze the effect of doubl
 <!-- GETTING STARTED -->
 ## Getting Started
 
-This is an example of how you may give instructions on setting up your project locally.
+<br/>
+
+### Installation
 To get a local copy up and running follow these simple example steps.
 
 
-### Installation
-
-_Below is an example of how you can instruct your audience on installing and setting up your app. This template doesn't rely on any external dependencies or services._
-
 1. Install <a href="https://www.anaconda.com/">Anaconda</a> 
 2. Clone the repo
-   ```sh
+   ```cmd
    git clone https://github.com/rafisudrajat/aneurysm-stent-sym.git
    ```
-3. Create conda virtual environment
-   ```sh
+3. Create conda virtual environment and activate it
+   ```cmd
    conda create -n [env-name] python=3.9
+   conda activate [env-name]
    ```
 4. Install python package in `requirements.txt`
-   ```sh
+   ```cmd
    pip install -r requirements.txt
    ```
 
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### How to run
+
+1. Open the `runSym.cmd` and select the simulation directory by changing the dir param variable
+  ```cmd
+   set "dir_param=experiment\[experiment_dir]"
+  ```
+1. Set the simulation setting by changing the appSettings.json file inside the [experiment_dir]
+2. Run the simulation using `runSym.cmd`
+  ```cmd
+   runSym.cmd
+  ```
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 
