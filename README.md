@@ -11,7 +11,7 @@
   <h3 align="center">Double Stent Deployment Simulation for Aneurysm Therapy</h3>
 
   <p align="center">
-    Simulation of deployment of double stent using Fast Virtual Stenting Algorithm.
+    Deployment simulation of double stent using Fast Virtual Stenting Algorithm.
     <br />
     <br />
     <a href="https://github.com/othneildrew/Best-README-Template/issues">Report Bug</a>
