@@ -14,23 +14,43 @@ def rotate_layer(origin,tangent,vertices):
     Rotate vertices in the z=0 plane such that it lies in a plane with some 
     normalized vector (tangent) as its normal, then displaces the points
     by some vector (origin)
+
+    origin: A 3D vector representing the translation (displacement) to apply after rotation.
+
+    tangent: A 3D vector representing the normal of the target plane. The vertices will be rotated such that their original plane (z=0) aligns with this new plane.
+
+    vertices: An array of 3D points (shape (n, 3)) to be transformed.
     '''
     
     x = vertices.T
+    # The tangent vector is normalized to ensure it's a unit vector.
     t = tangent/np.linalg.norm(tangent)
+    # Compute the rotation angle:
+    # The angle angle is calculated between the normalized tangent and the [0, 0, 1] vector (the original plane's normal, the z-axis).
+    # This gives the angle needed to rotate the z=0 plane to align with the new plane.
     angle = np.arccos(np.dot(t,np.array([0,0,1])))
     
-    
+    # If tangent has non-zero x or y components (if t[0] or t[1]), a rotation is required.
     if t[0] or t[1]:
+        # The tangent's x and y components are normalized (to compute the in-plane rotation).
+        # Suppose that t = [tx,ty,tz]
+        # This operation will make t = [tx/sqrt(tx^{2}+ty^{2}), ty/sqrt(tx^{2}+ty^{2}), tz/sqrt(tx^{2}+ty^{2}))]
         t /= np.linalg.norm(t[:-1])
-            
-        M1 = np.array([[t[0],t[1],0],
-                       [-t[1],t[0],0],
+        # M1: Rotates the tangent vector to align its projection in the xy-plane with the x-axis.
+        # t[0] = tx/sqrt(tx^{2}+ty^{2}) = cos(theta)
+        # t[1] = ty/sqrt(tx^{2}+ty^{2}) = sin(theta)
+        # Therefore M1 is a standard rotation matrix along z axis
+        M1 = np.array([[t[0],-t[1],0],
+                       [t[1],t[0],0],
                        [0,0,1]])
+        # M2: Rotates around the y-axis by angle to align the z-axis with the tangent vector.
+        # M2 is a standard rotation matrix along y axis
         M2 = np.array([[np.cos(angle),0,np.sin(angle)],
                        [0,1,0],
                        [-np.sin(angle),0,np.cos(angle)]])
         
+        # The full rotation M is computed as M = M1^{T} · (M2 · M1) 
+        # M1^{T} undoing the initial xy rotation after applying the tilt.
         M = np.dot(M2,M1)
         M = np.dot(M1.transpose(),M)
         x = np.dot(M,x)
