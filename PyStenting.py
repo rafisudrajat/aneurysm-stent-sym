@@ -69,6 +69,28 @@ class FlowDiverter:
     
     def __init__(self, unit_cell, radius, height, tcopy, hcopy, 
                  strut_radius = 0.05, centerline=None, offset_angle:float=0): #, nodes=None, lines=None):
+        '''
+        unit_cell: A Pattern object defining the base geometry
+
+        radius: Cylinder radius for the stent
+
+        height: Total length of the stent
+
+        tcopy, hcopy: Number of copies in tangential (circumferential) and longitudinal (lengthwise) directions
+
+        strut_radius: Thickness of the stent struts
+
+        centerline: Optional spline path for curved stents
+
+        offset_angle: Rotational offset for pattern alignment
+
+        Key initialization steps:
+
+        1. Stores input parameters and calculates derived dimensions
+        2. Computes layer counts and angular spacing between nodes
+        3. Generates the initial mesh using pattern_wrap()
+        4. Creates connection lists between nodes
+        '''
         
         #Input
         self.Pattern = unit_cell
@@ -89,16 +111,57 @@ class FlowDiverter:
         self.top_cap_size = unit_cell.top_cap_size
         
         #Params
+        # Represent number of layer in longitudinal direction
+        # Using (+ 1) in the beginning due to base layer
         self.layers = 1 + hcopy*(self.size_lon-1) + self.bot_cap_size + self.top_cap_size
+        # Represent number of nodes in one circular layer
+        # Using size_tgn-1 because, it is circular. 
+        # For example if the tangential size of a unit cell is 3, then nodes per layer calculation is like this:
+        # 3 + (3-1) + (3-1) + .... (3-2) = (3*(n-1)) -> every cell only needs 3-1 node except first and last cell. 
+        # Last cell is like another cell (not first), but have additional -1 due to connection with first cell. 
         self.nodes_per_layer = self.tcopy*(self.size_tgn-1)
+        # Distance between each layer in longitudinal direction
         self.layer_height = self.height/(self.layers-1)
+        # Distance between each node in tangential direction (represented by degree in radian)
         self.sep_angle = 2*np.pi/self.nodes_per_layer
+        # Additional rotational offset for pattern alignment
         self.offset_angle=offset_angle
         # print("offset ang:",offset_angle)
         
         #Initial mesh
         self.mesh = self.pattern_wrap(radius, centerline)
+        """
+        This processes the line connectivity data into a more usable format:
+            self.mesh.lines: The raw connectivity array in VTK format
+            Format: [n, pt1, pt2, n, pt3, pt4, ...] where n is number of points in each segment (always 2 for lines)
+            .reshape(-1,3): Reshapes into N×3 array where each row is [2, index1, index2]
+            [:,1:]: Drops the first column (the 2s), leaving just [index1, index2] pairs
+
+        Result:
+            A N×2 numpy array where each row represents one connection between nodes
+            Example: [[0, 1], [1, 2], ...] means node 0 connects to 1, 1 connects to 2, etc.
+
+        Purpose:
+            Provides a cleaner representation of connections for later processing
+            Used in strut generation and connectivity analysis
+        """
         self.lines = self.mesh.lines.reshape(-1,3)[:,1:]
+        """
+        This builds an adjacency list representing the stent's node connections:
+        
+        Calls connected_list() which:
+            For each node, finds all directly connected neighbors
+            Returns a list where connected[i] contains indices of nodes connected to node i
+        Implementation typically uses self.lines to build these relationships
+
+        Example output:
+        [
+            [1, 5],    # Node 0 connects to 1 and 5
+            [0, 2],    # Node 1 connects to 0 and 2
+            [1, 3],    # Node 2 connects to 1 and 3
+            ...
+        ]
+        """
         self.connected = self.connected_list()
 
 
@@ -109,43 +172,57 @@ class FlowDiverter:
         '''
         
         #Params
-        Nz = self.layers
-        N = self.nodes_per_layer
-        h = self.layer_height
-        sep_angle = self.sep_angle
-        offset_angle=self.offset_angle*np.pi
+        Nz = self.layers          # Total number of layers (circular rings)
+        N = self.nodes_per_layer  # Nodes per layer
+        h = self.layer_height     # Vertical distance between layers
+        sep_angle = self.sep_angle  # Angular spacing between nodes
+        offset_angle = self.offset_angle*np.pi  # Rotational offset in radians
         
         #Unit layer
         circ_nodes = np.zeros((N,3))
         for i in range(N):
+            # Creates a reference circle of nodes in the XY plane
+            # Nodes are equally spaced with angular separation sep_angle
+            # offset_angle rotates the entire pattern if needed
             circ_nodes[i] = R*np.array([np.cos(i*sep_angle+offset_angle),np.sin(i*sep_angle+offset_angle),0])
         
+        # Straight Cylinder Mode (no centerline):
         if not centerline:
             #Layer displacement vector
             dz = np.zeros((N,3))
-            dz[:,2] = h*np.ones(N)
+            dz[:,2] = h*np.ones(N) # Z-axis displacement vector
             
             #Generate positional nodes
             nodes = circ_nodes.copy()
             for i in range(1,Nz):
+                # Stacks copies of the base ring vertically
+                # Each new layer is offset by h in the Z-direction
                 nodes = np.append(nodes,circ_nodes+i*dz,axis=0)
         
+        # Curved Centerline Mode:
         else:
             #Centerline definition
             c = centerline.interp
+            # Samples the centerline at Nz points
             t = np.linspace(c.start()[0],c.end()[0],Nz)
+            # Get spline positions
             spline_points = c.evaluate(t)
-            tangents = c.tangent(t)
+            # Get spline directions (tangent vector)
+            tangents = c.tangent(t)        
             
             #Place layers along centerline
             nodes = np.array([[0,0,0]])
             for i in range(0,Nz):
+                # Uses rotate_layer to align the base ring with the tangent
                 layer = rotate_layer(spline_points[i],
                                      tangents[i],
                                      circ_nodes)
+                # Positions the ring at the spline point
                 nodes = np.append(nodes,layer,axis=0)
             nodes = nodes[1:]
         
+        # Creates quadrilateral faces between adjacent rings
+        # Each quad connects 4 nodes (current + next node in both rings)
         faces = np.array([])
         for i in range(Nz-1):
             for j in range(N):
@@ -161,14 +238,27 @@ class FlowDiverter:
         
         '''
         Wraps a pattern to the side of a dense cylinder surface mesh
+        
+        1. Generates base cylinder mesh
+        2. Processes three sections:
+            2.1. Top cap (if exists)
+            2.2. Main pattern (repeated along length)
+            2.3. Bottom cap (if exists)
+        3. Connects nodes according to the pattern's line definitions
+        4. Returns a clean wireframe structure
         '''
         
         #Params
+        # Number of main layer in longitudinal direction. Not including layer for bot_cap and top_cap.
         Nz = self.layers - self.bot_cap_size - self.top_cap_size
         #Nl = self.unit_cell_size 
+        # Number of node in longitudinal direction, in a unit cell.
         Ni = self.size_lon
+        # Number of node in tangential direction, in a unit cell.
         Nj = self.size_tgn
+        # Nomber of node in one layer
         N = self.nodes_per_layer
+        # Generates the 3D wireframe by wrapping the 2D pattern around a cylinder
         mesh = self.cylinder_mesh(R, centerline)
         
         lines = np.array([])
@@ -176,27 +266,33 @@ class FlowDiverter:
         #Top cap
         if self.top_cap.any():
             i = 0
+            # Repeats the cap pattern around the circumference (every Nj-1 nodes)
             for j in range(0,N,Nj-1):
                 cell_lines = self.top_cap.copy()
-                cell_lines += np.array([i,j])
+                cell_lines += np.array([i,j]) # Offset pattern
+                # k represent the line's index
                 for k in range(len(cell_lines)):
                     p0 = cell_lines[k,0]
                     p1 = cell_lines[k,1]
+                    # Calculates 3D node indices from 2D pattern coordinates
+                    # Uses modular arithmetic (%N) for circular connectivity
                     ind0 = p0[0]*N+(p0[1]%N)
                     ind1 = p1[0]*N+(p1[1]%N)
                     lines = np.append(lines,[2,ind0,ind1])
             lines = lines.astype('int')
             
         
-        #Shift unit cells
+        #Shift unit cells, if there is top cap
         start = (self.top_cap_size-1)*self.top_cap.any()
-        for i in range(start,Nz-1,Ni-1):
-            for j in range(0,N,Nj-1):
+        for i in range(start,Nz-1,Ni-1): # Step by unit cell height
+            for j in range(0,N,Nj-1): # Step around circumference
                 cell_lines = self.unit_cell.copy()
-                cell_lines += np.array([i,j])
+                cell_lines += np.array([i,j]) # Offset pattern
                 for k in range(len(cell_lines)):
                     p0 = cell_lines[k,0]
                     p1 = cell_lines[k,1]
+                    # Calculates 3D node indices from 2D pattern coordinates
+                    # Uses modular arithmetic (%N) for circular connectivity
                     ind0 = p0[0]*N+(p0[1]%N)
                     ind1 = p1[0]*N+(p1[1]%N)
                     lines = np.append(lines,[2,ind0,ind1])
@@ -204,13 +300,17 @@ class FlowDiverter:
         
         #Bottom Cap
         if self.bot_cap.any():
-            i += Ni-1
+            i += Ni-1 # Position after last main pattern cell
+            # Repeats the cap pattern around the circumference (every Nj-1 nodes)
             for j in range(0,N,Nj-1):
                 cell_lines = self.bot_cap.copy()
-                cell_lines += np.array([i,j])
+                cell_lines += np.array([i,j]) # Offset pattern
+                # k represent the line's index
                 for k in range(len(cell_lines)):
                     p0 = cell_lines[k,0]
                     p1 = cell_lines[k,1]
+                    # Calculates 3D node indices from 2D pattern coordinates
+                    # Uses modular arithmetic (%N) for circular connectivity
                     ind0 = p0[0]*N+(p0[1]%N)
                     ind1 = p1[0]*N+(p1[1]%N)
                     lines = np.append(lines,[2,ind0,ind1])
@@ -219,8 +319,8 @@ class FlowDiverter:
         
         #Surface and wire structure construction
         edges = pv.PolyData()
-        edges.points = mesh.points
-        edges.lines = lines
+        edges.points = mesh.points  # All 3D nodes
+        edges.lines = lines  # Connectivity data
         
         edges = edges.clean() #All points have at least one connection
         
@@ -367,23 +467,39 @@ class FlowDiverter:
         
 
 class Pattern:
+    '''
+    The Pattern class stores geometric configurations for stents and their end caps.
+    '''
     
     def __init__(self, pattern=np.array([]), bot_cap=np.array([]), top_cap=np.array([])):
+        '''
+        pattern: A 3D numpy array representing line segments of the stent's main structure.
+
+        Shape of the pattern: (n, 2, 2), where each entry is a line segment defined by two 2D points: [[[x1, y1], [x2, y2]], ...].
+
+        bot_cap/top_cap: Arrays for the bottom/top end caps of the stent (similar structure to pattern).
+        '''
         
         self.pattern = pattern
         self.bot_cap = bot_cap
         self.top_cap = top_cap
         
         if pattern.any():
+            # size_lon/size_tgn: Longitudinal/tangential (circumferential) dimensions of the stent pattern.
+            # Add 1 becasue pattern[:,:,0].max() returning a max index starting from 0.
             self.size_lon = 1 + pattern[:,:,0].max()
             self.size_tgn = 1 + pattern[:,:,1].max()
         
-        if bot_cap.any():
+        if bot_cap.any(): 
+            # bot_cap_size/top_cap_size: Dimensions of the end caps.
+            # Add 1 becasue pattern[:,:,0].max() returning a max index starting from 0.
             self.bot_cap_size = 1 + bot_cap[:,:,0].max()
         else:
             self.bot_cap_size = 0
             
         if top_cap.any():
+            # bot_cap_size/top_cap_size: Dimensions of the end caps.
+            # Add 1 becasue pattern[:,:,0].max() returning a max index starting from 0.
             self.top_cap_size = 1 + top_cap[:,:,0].max()
         else:
             self.top_cap_size = 0
@@ -563,11 +679,19 @@ def helical(size):
     
     unit_cell_lines = np.array([[[0,0],[0,0]]])
     for i in range(size-1):
+        # First loop: Adds lines like (i, i) → (i+1, i+1) (primary diagonal).
         unit_cell_lines = np.append(unit_cell_lines,
                                     [[[i,i],[i+1,i+1]]],axis=0)
         
+        # Second loop: Adds lines like (i, size-1-i) → (i+1, size-i-2) (anti-diagonal).
         unit_cell_lines = np.append(unit_cell_lines,
                                     [[[i,size-1-i],[i+1,size-i-2]]],axis=0)
+    # # Example of size 3
+    # [(0,0)-(0,0)] -> Initialization
+    # [(0,0)-(1,1)], -> Primary-diagonal
+    # [(0,2)-(1,1)], -> Anti-diagonal 
+    # [(1,1)-(2,2)], -> Primary-diagonal
+    # [(1,1)-(2,0)] -> Anti-diagonal
     return Pattern(pattern=unit_cell_lines)
                 
 
@@ -575,9 +699,11 @@ def helical(size):
 #Tilted Rectangular
 def semienterprise():
     
-    pattern_lines = np.array([[[0,0],[1,1]],
-                              [[2,0],[1,1]],
-                              [[1,1],[0,2]]])
+    pattern_lines = np.array([
+                                [[0,0],[1,1]],    # Line from (0,0) to (1,1)
+                                [[2,0],[1,1]],    # Line from (2,0) to (1,1)
+                                [[1,1],[0,2]]     # Line from (1,1) to (0,2)
+                            ]) 
     
     pattern_cap = np.array([[[0,0],[1,1]],
                             [[1,1],[0,2]]])
@@ -591,6 +717,7 @@ def enterprise(N=1):
         return enterprise(2)
     
     elif N == 1:
+        # 6 pattern lines forming a braided structure.
         pattern_lines = np.array([[[0,0],[1,1]],
                                   [[1,1],[0,2]],
                                   [[0,2],[1,3]],
@@ -605,6 +732,8 @@ def enterprise(N=1):
                             [[0,3],[1,4]]])
     
     else:
+        # 12 pattern lines with additional layers for larger stents.
+        # Includes both bottom and top caps for anchoring.
         pattern_lines = np.array([[[0,0],[1,1]],
                                   [[1,1],[2,2]],
                                   [[2,2],[1,3]],
@@ -633,7 +762,8 @@ def enterprise(N=1):
 
 #Honeycomb
 def honeycomb():
-    
+    # Generates a hexagonal (honeycomb-like) pattern, known for mechanical stability.
+    # Forms interconnected hexagons.
     pattern_lines = np.array([[[2,0],[0,1]],
                               [[0,1],[0,2]],
                               [[0,2],[2,3]],
