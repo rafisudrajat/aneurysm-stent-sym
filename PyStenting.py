@@ -146,22 +146,8 @@ class FlowDiverter:
             Used in strut generation and connectivity analysis
         """
         self.lines = self.mesh.lines.reshape(-1,3)[:,1:]
-        """
-        This builds an adjacency list representing the stent's node connections:
-        
-        Calls connected_list() which:
-            For each node, finds all directly connected neighbors
-            Returns a list where connected[i] contains indices of nodes connected to node i
-        Implementation typically uses self.lines to build these relationships
-
-        Example output:
-        [
-            [1, 5],    # Node 0 connects to 1 and 5
-            [0, 2],    # Node 1 connects to 0 and 2
-            [1, 3],    # Node 2 connects to 1 and 3
-            ...
-        ]
-        """
+    
+        # This builds an adjacency list representing the stent's node connections    
         self.connected = self.connected_list()
 
 
@@ -337,21 +323,38 @@ class FlowDiverter:
         p.add_mesh(self.mesh, color='black', line_width=2)
         p.show(cpos=cpos)
         
-    def connected_nodes(self,idx):
-        
+    def connected_nodes(self, idx):
         '''
         Returns array of node connections
         '''
         
-        #Connected ids
+        # Find indices of all lines that contain the target node
+        # If idx=5 and self.lines=[[4,5],[5,6],[7,8]], returns [0,1]
         cids = [i for i, line in enumerate(self.lines) if idx in line]
         
-        #Connected nodes
+        # Get all unique nodes from those connecting lines
+        # For each found line, gets both endpoint nodes
+        # Flattens the results and removes duplicates with np.unique
+        # Continuing the example, would give [4,5,6]
         connected = np.unique([self.lines[i].ravel() for i in cids])
         
+        # Remove the original node from the results
+        # Final result for the example: [4,6]
         return np.delete(connected, np.argwhere(connected == idx))
     
     def connected_list(self):
+        '''
+        This method builds a complete adjacency list for all nodes in the mesh.
+        Example output
+        [
+            [1, 5],     # Node 0 connects to 1 and 5
+            [0, 2],     # Node 1 connects to 0 and 2 
+            [1, 3],     # Node 2 connects to 1 and 3
+            [2, 4],     # Node 3 connects to 2 and 4
+            [3, 5],     # Node 4 connects to 3 and 5
+            [0, 4]      # Node 5 connects to 0 and 4
+        ]
+        '''
         
         lst = []
         for i in range(len(self.mesh.points)):
