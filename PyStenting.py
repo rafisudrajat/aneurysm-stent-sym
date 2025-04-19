@@ -379,64 +379,92 @@ class FlowDiverter:
         
         '''
         Renders strut mesh using wire inflation algorithm
+
+        n=3: Number of sides for strut cross-sections (triangular by default)
+        h=1.2: Inflation height multiplier (controls strut bulge)
+        threshold=2: Quality control for face filtering
+        save_as: Optional export path
         '''
         
-        r = self.strut_radius
+        r = self.strut_radius  # Base strut thickness
         
 
-        node_mesh = pv.PolyData([])
-        line_mesh = pv.PolyData([])
+        node_mesh = pv.PolyData([])  # Container for junction geometries
+        line_mesh = pv.PolyData([])  # Container for strut geometries
         
-        polygon = np.array([[r*np.cos(i*2*np.pi/n), r*np.sin(i*2*np.pi/n), 0] for i in range(n)])
+        # Regular n-gon
+        polygon = np.array([[r*np.cos(i*2*np.pi/n), r*np.sin(i*2*np.pi/n), 0] for i in range(n)]) # → 2D hull
+        # The small z-offset (0.1*r) forces 3D hull generation
         polygon = np.append(np.array([[0,0,0.1*r]]),polygon,axis=0)
         
         for idx in range(len(self.mesh.points)):
             
-            pref = self.mesh.points[idx]
-            cids = self.connected[idx]
+            pref = self.mesh.points[idx]  # Node position
+            cids = self.connected[idx]    # Connected node IDs
             
+            # cloud: Collects all 3D points for convex hull generation
             cloud = np.zeros((1,3))
             
+            # subt: Stores clipping cones for later mesh refinement
             subt = []
+            # Generate offset points along each connection
             for cid in cids:
-                t = self.mesh.points[cid]-pref
-                t /= np.linalg.norm(t)
+                # Vector Subtraction: t = p₂ - p₁ gets direction between nodes
+                # Normalization: t̂ = t/||t|| creates unit direction vector
+                # Purpose: Establishes connection orientation for geometric operations
+                t = self.mesh.points[cid]-pref # Raw connection vector
+                t /= np.linalg.norm(t) # Unit vector normalization
+                # Offset Calculation: pref + h*r*t
+                    # h*r: Offset distance (height multiplier × strut radius)
+                    # Positions cross-section away from node center
+                # Rotation: rotate_layer aligns polygon with connection vector
+                    # Uses rotation matrix to orient cross-section perpendicular to t
                 vertices = rotate_layer(pref+h*r*t, t, polygon)
                 cloud = np.append(cloud,vertices,axis=0)
+                # Create clipping cone for smooth blending
                 cone = pv.Cone(center = pref+h*r*t, direction=-t, height = 2*h*r, radius=2*r, resolution=n)
                 subt.append(cone)
             
-            cloud = cloud[1:]
-            hull = ConvexHull(cloud)
-            faces = hull.simplices
-            faces = np.append(3*np.ones((faces.shape[0],1),'int'),faces,axis=1).ravel()
+            cloud = cloud[1:]  # Remove initialization point
+            hull = ConvexHull(cloud)  # Create 3D convex hull
+            faces = hull.simplices  # Get triangular faces from hull
+            # Format faces for VTK/PyVista (prepend 3 for triangle count)
+            # VTK requires faces in format [n_verts, v1, v2, ..., vn]
+            faces = np.append(3*np.ones((faces.shape[0],1), faces, axis=1).ravel())
             
             add = pv.PolyData()
-            add.points = cloud
-            add.faces = faces
+            add.points = cloud  # Set point coordinates
+            add.faces = faces  # Set face connectivity
             
+            # Clip with directional cones for smooth transitions
             for surf in subt:
                 add = add.clip_surface(surf, invert=False)
             
             node_mesh += add
         
+        # Create new polygon with downward offset for struts
         polygon = np.array([[r*np.cos(i*2*np.pi/n), r*np.sin(i*2*np.pi/n), 0] for i in range(n)])
+        # Uses -0.1*r z-offset instead of +0.1*r, Ensures proper blending in strut direction
         polygon = np.append(np.array([[0,0,-0.1*r]]),polygon,axis=0)
         
         for line in self.lines:
         
             pref = [self.mesh.points[line[0]], self.mesh.points[line[1]]]
                 
-            cloud = np.zeros((1,3))
-            subt = []
+            cloud = np.zeros((1,3))  # Initialize point cloud
+            subt = []  # Reset clipping surfaces
+            # Process both ends of strut
             for i in range(2):
-                t = pref[i-1] - pref[i]
-                t /= np.linalg.norm(t)
+                t = pref[i-1] - pref[i] # Direction vector
+                t /= np.linalg.norm(t)  # Normalized
+                # Generate offset points
                 vertices = rotate_layer(pref[i]+h*r*t, t, polygon)
                 cloud = np.append(cloud,vertices,axis=0)
+                # Create clipping cone
                 cone = pv.Cone(center = pref[i]+h*r*t, direction=t, height = 2*h*r, radius=2*r, resolution=n)
                 subt.append(cone)
-                
+
+            # Repeat hull/face/clipping process (same as node processing)
             cloud = cloud[1:]
             hull = ConvexHull(cloud)
             faces = hull.simplices
@@ -451,15 +479,18 @@ class FlowDiverter:
             
             line_mesh += add
         
+        # Combine node and strut meshes
         strut = pv.PolyData(node_mesh+line_mesh)
-        
+
+        # Calculate face areas for quality control
         # areas = strut.compute_cell_sizes(length=False,volume=False).cell_arrays['Area']
         areas = strut.compute_cell_sizes(length=False,volume=False).cell_data['Area']
         hist,bins = np.histogram(areas,bins=100)
-        faces = strut.faces.reshape(-1,4)[:,1:]
-        
+        # Filter small/low-quality faces
+        faces = strut.faces.reshape(-1,4)[:,1:] # Extract vertex indices
         delete_cells = [i for i in range(len(faces)) if areas[i] < bins[threshold]]
         faces = np.delete(faces,delete_cells,axis=0)
+        # Rebuild faces with filtered set
         strut.faces = np.append(3*np.ones((len(faces),1),dtype='int'),faces,axis=1).ravel()
         
         if save_as:
