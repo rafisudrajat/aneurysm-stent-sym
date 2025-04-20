@@ -540,9 +540,31 @@ class Pattern:
         
 
 class VascCenterline:
-    
+    '''
+    This class processes 3D centerline data (like blood vessel paths) for medical applications, providing:
+        1. Centerline interpolation
+        2. Segment extraction
+        3. Direction control
+        4. Polyline conversion
+    '''
     def __init__(self, points, init_range=np.array([]), 
                  point_spacing = 5, reverse = False):
+        '''
+        Parameters:
+            points: Raw 3D centerline points (N×3 array)
+
+            init_range: Optional subset range [start_idx, end_idx]
+
+            point_spacing: Downsampling interval for interpolation
+
+            reverse: Flip centerline direction if True
+
+        Workflow:
+            1. Stores full centerline as polyline (points2lines)
+            2. Extracts subset if init_range specified
+            3. Creates interpolated curve (interp_cl)
+            4. Stores initial segment as polyline
+        '''
         
         
         self.centerline_full = self.points2lines(points)
@@ -559,23 +581,48 @@ class VascCenterline:
         
         
     def interp_cl(self, points, point_spacing, reverse):
+        '''
+        1. Handles direction reversal
+
+        2. Downsamples points (reduces computation cost)
+
+        3. Calls cubic_curve() (external spline interpolator)
+
+        Returns: Spline object with methods like:
+
+            .evaluate(t): Get point at parameter t
+
+            .tangent(t): Get direction vector
+        '''
         
         
         if reverse:
-            points = points[::-1]
-        
-        points = points[::point_spacing]
+            points = points[::-1] # Reverse direction
 
-        return cubic_curve(points)
+        # Selects points at regular intervals (every point_spacing-th point)
+        # Example: If point_spacing=5, keeps points at indices 0, 5, 10, 15,...
+        points = points[::point_spacing] # Downsample
+
+        return cubic_curve(points) # Returns spline object
     
     def points2lines(self, points):
+        '''
+        Convert points points into vtk format
+
+        Example output:
+
+        Points: [[0,0,0], [1,0,0], [1,1,0]]
+        Lines: [[2, 0, 1], [2, 1, 2]] 
+        '''
     
         poly = pv.PolyData()
-        poly.points = points
+        poly.points = points # Set vertices
+
+        # Create line connectivity array
         cells = np.full((len(points)-1, 3), 2, dtype=np.int_)
-        cells[:, 1] = np.arange(0, len(points)-1, dtype=np.int_)
-        cells[:, 2] = np.arange(1, len(points), dtype=np.int_)
-        poly.lines = cells
+        cells[:, 1] = np.arange(0, len(points)-1, dtype=np.int_) # Start indices
+        cells[:, 2] = np.arange(1, len(points), dtype=np.int_)  # End indices
+        poly.lines = cells # VTK-format lines
         
         return poly
 
