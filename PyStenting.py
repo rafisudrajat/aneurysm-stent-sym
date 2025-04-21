@@ -631,6 +631,15 @@ class VirtualStenting:
     
     def __init__(self, stent=None, centerline=None, boundary=None,
                  initial_stent = None, target_stent = None, crimping = 0.2):
+        '''
+        Stent: The device to be deployed
+
+        Centerline: The vessel path
+
+        Boundary: Vessel wall geometry
+
+        Crimping: Radial compression ratio (default 20%)
+        '''
         
         if stent:
             self.stent = stent
@@ -641,7 +650,8 @@ class VirtualStenting:
         
         if boundary:
             self.boundary = boundary
-        
+
+        # Sets initial (compressed) and target (expanded) states
         if initial_stent:
             self.initial_stent = initial_stent
         else:
@@ -654,11 +664,19 @@ class VirtualStenting:
         
     
     def initial(self, stent, c, crimping):
+        '''
+        Creates a crimped (compressed) version of the stent
+        '''
         
         r = stent.radius
-        initial_stent = FlowDiverter(stent.Pattern, r*crimping, stent.height,
-                                     stent.tcopy, stent.hcopy, centerline=c,
-                                     strut_radius=stent.strut_radius, offset_angle=stent.offset_angle)
+        initial_stent = FlowDiverter(stent.Pattern, 
+                                     r*crimping, # Reduced radius
+                                     stent.height,
+                                     stent.tcopy, 
+                                     stent.hcopy, 
+                                     centerline=c,
+                                     strut_radius=stent.strut_radius, 
+                                     offset_angle=stent.offset_angle)
         
         return initial_stent
         
@@ -666,11 +684,19 @@ class VirtualStenting:
     def deploy(self, tol = 1e-5, add_tol=0, step = None, fstop = 1, 
                max_iter = 300, alpha = 1, verbose:bool = True, OC:bool = True, 
                render_gif:bool=False, deployment_name:str=""):
+        '''
+        tol: Convergence tolerance,
+        add_tol: Additional wall clearance,
+        max_iter: Maximum iterations per step,
+        alpha: Relaxation factor,
+        OC: Optimality Control	
+        '''
         
         #Parameters
         Nz = self.stent.layers
         N = len(self.stent.mesh.points)/Nz
         #Result holder
+        # Create result mesh container
         result_mesh = pv.PolyData()
         result_mesh.points = self.initial_stent.mesh.points
         result_mesh.lines = self.initial_stent.mesh.lines
@@ -683,10 +709,10 @@ class VirtualStenting:
         con_tol = self.stent.strut_radius + add_tol
         
         #Nearest neighbor distance
-        tree = KDTree(self.boundary.points)
+        tree = KDTree(self.boundary.points) # Spatial index for fast collision checks
         def proximity(point):
             d,idx = tree.query(point)
-            return d
+            return d # Distance to nearest vessel wall
         
         #Connected points
         connected = self.stent.connected
@@ -705,27 +731,28 @@ class VirtualStenting:
         else:
             layers = [int(fstop*Nz)]
 
-        for l in layers:
+        for l in layers: # Process stent layers incrementally
             
             err = np.ones(int(l*N)) #List of errors
             Niter = 0 #Number of iterations done
             
             while max(err)>tol and Niter<max_iter:
+                # Force calculation and position update
                 for i in range(int(l*N)):
 
                     F = 0
                     kt = 0
-                    for j in connected[i]:
-                        k = 1/np.linalg.norm(p_ref[j]-p_ref[i])
-                        F += k*((p[j]-p[i])-(p_ref[j]-p_ref[i]))
+                    for j in connected[i]:  # For each connected node
+                        k = 1/np.linalg.norm(p_ref[j]-p_ref[i])  # Spring constant
+                        F += k*((p[j]-p[i])-(p_ref[j]-p_ref[i])) # Spring force
                         kt += k
                     
                     if OC:
-                        F *= proximity(p[i])/proximity(p_prev[i])
+                        F *= proximity(p[i])/proximity(p_prev[i]) # Adaptive force scaling
                     
-                    p_pred[i] = p[i] + alpha*F/kt
+                    p_pred[i] = p[i] + alpha*F/kt # Predicted new position
 
-                    if proximity(p_pred[i])>con_tol:
+                    if proximity(p_pred[i])>con_tol: # Check wall clearance
                         p_new[i] = p_pred[i]
 
                     err[i] = np.linalg.norm(p_new[i]-p[i])
@@ -739,7 +766,7 @@ class VirtualStenting:
 
             if render_gif:
                 result_mesh.points=p
-                frame(mesh=result_mesh)
+                frame(mesh=result_mesh) # Capture animation frames
                 
         # end frame of gif rendering
         if render_gif:
