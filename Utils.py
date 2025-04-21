@@ -18,13 +18,34 @@ def points2lines(points):
 def cylinder_bound(R=1,height=10,hstent=10,res_ang=100,res_lon=100, 
                    origin=np.zeros(3), direction=np.array([0,0,1]),
                    get_inlet_outlet=False):
+    '''
+    This code creates a cylindrical boundary mesh for vascular simulations, 
+    with options to extract inlet/outlet surfaces and stent deployment regions.
+
+    The function generates:
+
+        1. A cylindrical surface mesh
+        2. A centerline path for stent deployment
+        3. Optional inlet/outlet surfaces for flow simulations
+    
+    Parameters:
+
+        R: Cylinder radius,
+        height: Total cylinder length,
+        hstent: Stent deployment region length,
+        res_ang: Angular resolution (# points per circle),
+        res_lon: Longitudinal resolution (# layers),
+        origin: Cylinder base position,
+        direction: Cylinder orientation,
+        get_inlet_outlet: Flag to return flow surfaces
+    '''
     
     #Parametes
-    Nz = res_lon
-    N = res_ang
-    sep_angle = 2*np.pi/N
+    Nz = res_lon  # Number of longitudinal layers
+    N = res_ang   # Points per circular layer
+    sep_angle = 2*np.pi/N  # Angular spacing
     
-    #Centerline
+    # Create straight centerline along z-axis
     t = np.linspace(0,1,res_lon)
     z = height*t
     y = np.zeros(len(t))
@@ -35,9 +56,9 @@ def cylinder_bound(R=1,height=10,hstent=10,res_ang=100,res_lon=100,
     points = np.append(points,z.reshape(len(z),1),axis=1)
     
     if hstent != height:
-        
+        # Calculate start/stop indices for stent region
         start = int(0.5*res_lon*(1-hstent/height))
-        stop = int(0.5*res_lon*(1+hstent/height))
+        stop = int(0.5*res_lon*(1+hstent/height)) # Middle segment
         
         stent_centerline = points[start:stop+1]
         
@@ -48,15 +69,18 @@ def cylinder_bound(R=1,height=10,hstent=10,res_ang=100,res_lon=100,
     #Unit layer
     circ_nodes = np.zeros((N,3)) 
     for i in range(N):
+        # Create points on a unit circle (XY plane)
         circ_nodes[i] = R*np.array([np.sin(i*sep_angle),np.cos(i*sep_angle),0])
+    # Rotate to match desired orientation
     circ_nodes = rotate_layer(origin,direction,circ_nodes)
     
     
-    #Layer displacement vector
+    # Create displacement vector between layers
     dz = height*direction/(Nz-1)
     dz = np.array([dz for i in range(N)])
     
     #Generate positional nodes
+    # Build 3D cylinder by stacking rotated circles
     nodes = circ_nodes.copy()
     for i in range(1,Nz):
         nodes = np.append(nodes,circ_nodes-i*dz,axis=0)
@@ -65,14 +89,16 @@ def cylinder_bound(R=1,height=10,hstent=10,res_ang=100,res_lon=100,
 
     # Get inlet and outlet
     if get_inlet_outlet:
-        inletPoints=nodes[:res_ang]
-        outletPoints=nodes[len(nodes)-res_ang:]
+        inletPoints=nodes[:res_ang] # First layer
+        outletPoints=nodes[len(nodes)-res_ang:] # Last layer
         facesInletOutlet=np.array([i for i in range(res_ang)])
+        # Create VTK-formatted face connectivity
         facesInletOutlet=np.insert(facesInletOutlet, 0, res_ang)
         facesInletOutlet=facesInletOutlet.astype('int')
         print("inletPoints",inletPoints)
         print("facesInletOutlet",inletPoints)
         print("outletPoints",inletPoints)
+        # Create separate meshes
         meshInlet=pv.PolyData(inletPoints,facesInletOutlet)
         meshOutlet=pv.PolyData(outletPoints,facesInletOutlet)
         dict_inlet_outlet={"inlet":meshInlet,"outlet":meshOutlet}
@@ -80,6 +106,7 @@ def cylinder_bound(R=1,height=10,hstent=10,res_ang=100,res_lon=100,
     faces = np.array([])
     for i in range(Nz-1):
         for j in range(N):
+            # VTK format: [4, pt1, pt2, pt3, pt4] for quads
             f = np.array([4,i*N+j,i*N+(j+1)%N,(i+1)*N+(j+1)%N,(i+1)*N+j])
             faces = np.append(faces,f)
         
@@ -87,6 +114,7 @@ def cylinder_bound(R=1,height=10,hstent=10,res_ang=100,res_lon=100,
     mesh = pv.PolyData(nodes,faces)
     
     mesh = mesh.clean()
+    # Convert to triangles and remove duplicates
     mesh = mesh.triangulate()
     mesh = mesh.clean()
 
