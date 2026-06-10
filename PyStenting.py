@@ -1,895 +1,855 @@
+"""Fast Virtual Stenting simulation — core geometry, stent patterns, and FVS algorithm.
+
+Classes:
+    Pattern         — 2-D unit-cell geometry (lattice coordinates).
+    FlowDiverter    — Wireframe stent mesh built by tiling a Pattern on a cylinder.
+    VascCenterline  — Cubic-spline wrapper around a raw vascular centreline.
+    VirtualStenting — Spring-mass FVS deployment engine.
+
+Factory functions:
+    helical, semienterprise, enterprise, honeycomb  — pre-built Pattern instances.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
 import numpy as np
 import pyvista as pv
 from splipy.curve_factory import cubic_curve
 from scipy.spatial import ConvexHull, KDTree
 
 
-'''
-Basic Functions
-'''
+def rotate_layer(
+    origin: np.ndarray,
+    tangent: np.ndarray,
+    vertices: np.ndarray,
+) -> np.ndarray:
+    """Rotate *vertices* from the z=0 plane onto the plane normal to *tangent*, then translate.
 
-def rotate_layer(origin,tangent,vertices):
-    
-    '''
-    Rotate vertices in the z=0 plane such that it lies in a plane with some 
-    normalized vector (tangent) as its normal, then displaces the points
-    by some vector (origin)
+    Builds the rotation as M = M1ᵀ · M2 · M1, where:
+      - M1 aligns the tangent's xy-projection with the x-axis (z-axis rotation).
+      - M2 tilts by the angle between the tangent and [0,0,1] (y-axis rotation).
 
-    origin: A 3D vector representing the translation (displacement) to apply after rotation.
+    Args:
+        origin: Translation applied after rotation. Shape (3,).
+        tangent: Normal of the target plane (need not be unit length). Shape (3,).
+        vertices: Points in the z=0 plane. Shape (N, 3).
 
-    tangent: A 3D vector representing the normal of the target plane. The vertices will be rotated such that their original plane (z=0) aligns with this new plane.
-
-    vertices: An array of 3D points (shape (n, 3)) to be transformed.
-    '''
-    
+    Returns:
+        Transformed points, same shape as *vertices*.
+    """
     x = vertices.T
-    # The tangent vector is normalized to ensure it's a unit vector.
-    t = tangent/np.linalg.norm(tangent)
-    # Compute the rotation angle:
-    # The angle angle is calculated between the normalized tangent and the [0, 0, 1] vector (the original plane's normal, the z-axis).
-    # This gives the angle needed to rotate the z=0 plane to align with the new plane.
-    angle = np.arccos(np.dot(t,np.array([0,0,1])))
-    
-    # If tangent has non-zero x or y components (if t[0] or t[1]), a rotation is required.
-    if t[0] or t[1]:
-        # The tangent's x and y components are normalized (to compute the in-plane rotation).
-        # Suppose that t = [tx,ty,tz]
-        # This operation will make t = [tx/sqrt(tx^{2}+ty^{2}), ty/sqrt(tx^{2}+ty^{2}), tz/sqrt(tx^{2}+ty^{2}))]
-        t /= np.linalg.norm(t[:-1])
-        # M1: Rotates the tangent vector to align its projection in the xy-plane with the x-axis.
-        # t[0] = tx/sqrt(tx^{2}+ty^{2}) = cos(theta)
-        # t[1] = ty/sqrt(tx^{2}+ty^{2}) = sin(theta)
-        # Therefore M1 is a standard rotation matrix along z axis
-        M1 = np.array([[t[0],-t[1],0],
-                       [t[1],t[0],0],
-                       [0,0,1]])
-        # M2: Rotates around the y-axis by angle to align the z-axis with the tangent vector.
-        # M2 is a standard rotation matrix along y axis
-        M2 = np.array([[np.cos(angle),0,np.sin(angle)],
-                       [0,1,0],
-                       [-np.sin(angle),0,np.cos(angle)]])
-        
-        # The full rotation M is computed as M = M1^{T} · (M2 · M1) 
-        # M1^{T} undoing the initial xy rotation after applying the tilt.
-        M = np.dot(M2,M1)
-        M = np.dot(M1.transpose(),M)
-        x = np.dot(M,x)
-        
-        return origin + x.T
+    t = tangent / np.linalg.norm(tangent)
+    angle = np.arccos(np.dot(t, np.array([0, 0, 1])))
 
+    if t[0] or t[1]:
+        t /= np.linalg.norm(t[:-1])
+        M1 = np.array([[t[0], -t[1], 0],
+                       [t[1],  t[0], 0],
+                       [0,     0,    1]])
+        M2 = np.array([[ np.cos(angle), 0, np.sin(angle)],
+                       [0,              1, 0             ],
+                       [-np.sin(angle), 0, np.cos(angle)]])
+        M = np.dot(M1.T, np.dot(M2, M1))
+        x = np.dot(M, x)
+        return origin + x.T
     else:
         return origin + vertices
 
 
-'''
-Objects
-'''        
-
 class FlowDiverter:
-    
-    def __init__(self, unit_cell, radius, height, tcopy, hcopy, 
-                 strut_radius = 0.05, centerline=None, offset_angle:float=0): #, nodes=None, lines=None):
-        '''
-        unit_cell: A Pattern object defining the base geometry
+    """Wireframe stent mesh built by tiling a 2-D unit-cell pattern around a cylinder.
 
-        radius: Cylinder radius for the stent
+    The pattern is repeated *tcopy* times circumferentially and *hcopy* times
+    longitudinally.  Optional top/bottom caps from the Pattern are added at each
+    end of the main body.
 
-        height: Total length of the stent
+    Attributes:
+        mesh:      PyVista PolyData wireframe (points + line connectivity).
+        lines:     N×2 array of node index pairs extracted from ``mesh.lines``.
+        connected: Adjacency list — ``connected[i]`` holds the neighbours of node i.
+    """
 
-        tcopy, hcopy: Number of copies in tangential (circumferential) and longitudinal (lengthwise) directions
+    def __init__(
+        self,
+        unit_cell: Pattern,
+        radius: float,
+        height: float,
+        tcopy: int,
+        hcopy: int,
+        strut_radius: float = 0.05,
+        centerline: VascCenterline | None = None,
+        offset_angle: float = 0,
+    ) -> None:
+        """Build stent wireframe and adjacency list.
 
-        strut_radius: Thickness of the stent struts
-
-        centerline: Optional spline path for curved stents
-
-        offset_angle: Rotational offset for pattern alignment
-
-        Key initialization steps:
-
-        1. Stores input parameters and calculates derived dimensions
-        2. Computes layer counts and angular spacing between nodes
-        3. Generates the initial mesh using pattern_wrap()
-        4. Creates connection lists between nodes
-        '''
-        
-        #Input
+        Args:
+            unit_cell: Pattern defining the repeating unit cell geometry.
+            radius: Nominal stent radius (mm).
+            height: Total deployed stent length (mm).
+            tcopy: Unit-cell copies in the circumferential direction.
+            hcopy: Unit-cell copies along the stent length.
+            strut_radius: Cross-section radius for strut inflation. Defaults to 0.05.
+            centerline: If provided, nodes are placed along this curved path instead
+                of a straight axis.
+            offset_angle: Rotational offset in units of π, applied to the first node
+                of every layer; useful for aligning overlapping double-stent patterns.
+        """
         self.Pattern = unit_cell
         self.unit_cell = unit_cell.pattern
-        self.size_lon = unit_cell.size_lon 
-        self.size_tgn = unit_cell.size_tgn                  
+        self.size_lon = unit_cell.size_lon
+        self.size_tgn = unit_cell.size_tgn
         self.radius = radius
         self.height = height
         self.tcopy = tcopy
         self.hcopy = hcopy
         self.strut_radius = strut_radius
         self.centerline = centerline
-        
-        #Cap
+
         self.bot_cap = unit_cell.bot_cap
         self.top_cap = unit_cell.top_cap
         self.bot_cap_size = unit_cell.bot_cap_size
         self.top_cap_size = unit_cell.top_cap_size
-        
-        #Params
-        # Represent number of layer in longitudinal direction
-        # Using (+ 1) in the beginning due to base layer
-        self.layers = 1 + hcopy*(self.size_lon-1) + self.bot_cap_size + self.top_cap_size
-        # Represent number of nodes in one circular layer
-        # Using size_tgn-1 because, it is circular. 
-        # For example if the tangential size of a unit cell is 3, then nodes per layer calculation is like this:
-        # 3 + (3-1) + (3-1) + .... (3-2) = (3*(n-1)) -> every cell only needs 3-1 node except first and last cell. 
-        # Last cell is like another cell (not first), but have additional -1 due to connection with first cell. 
-        self.nodes_per_layer = self.tcopy*(self.size_tgn-1)
-        # Distance between each layer in longitudinal direction
-        self.layer_height = self.height/(self.layers-1)
-        # Distance between each node in tangential direction (represented by degree in radian)
-        self.sep_angle = 2*np.pi/self.nodes_per_layer
-        # Additional rotational offset for pattern alignment
-        self.offset_angle=offset_angle
-        # print("offset ang:",offset_angle)
-        
-        #Initial mesh
-        self.mesh = self.pattern_wrap(radius, centerline)
+
+        # +1 for the mandatory base layer; cap layers are additive on top.
+        self.layers: int = 1 + hcopy * (self.size_lon - 1) + self.bot_cap_size + self.top_cap_size
+        # Circular topology: each cell shares one edge with its neighbour, so
+        # tcopy cells need tcopy*(size_tgn-1) unique nodes, not tcopy*size_tgn.
+        self.nodes_per_layer: int = self.tcopy * (self.size_tgn - 1)
+        self.layer_height: float = self.height / (self.layers - 1)
+        self.sep_angle: float = 2 * np.pi / self.nodes_per_layer
+        self.offset_angle: float = offset_angle
+
+        self.mesh: pv.PolyData = self.pattern_wrap(radius, centerline)
+        # VTK lines array is [2, i, j, 2, k, l, …]; reshape to N×2 index pairs.
+        self.lines: np.ndarray = self.mesh.lines.reshape(-1, 3)[:, 1:]
+        self.connected: list[list[int]] = self.connected_list()
+
+    def cylinder_mesh(self, R: float, centerline: VascCenterline | None) -> pv.PolyData:
+        """Create a point cloud arranged on a cylindrical surface (no face connectivity).
+
+        Straight mode (centerline is None): rings are stacked uniformly along z.
+        Curved mode: each ring is placed at a spline sample point and rotated to be
+        perpendicular to the local tangent via :func:`rotate_layer`.
+
+        Args:
+            R: Cylinder radius.
+            centerline: Spline path; ``None`` produces a straight cylinder.
+
+        Returns:
+            PolyData containing only node positions.
         """
-        This processes the line connectivity data into a more usable format:
-            self.mesh.lines: The raw connectivity array in VTK format
-            Format: [n, pt1, pt2, n, pt3, pt4, ...] where n is number of points in each segment (always 2 for lines)
-            .reshape(-1,3): Reshapes into N×3 array where each row is [2, index1, index2]
-            [:,1:]: Drops the first column (the 2s), leaving just [index1, index2] pairs
-
-        Result:
-            A N×2 numpy array where each row represents one connection between nodes
-            Example: [[0, 1], [1, 2], ...] means node 0 connects to 1, 1 connects to 2, etc.
-
-        Purpose:
-            Provides a cleaner representation of connections for later processing
-            Used in strut generation and connectivity analysis
-        """
-        self.lines = self.mesh.lines.reshape(-1,3)[:,1:]
-    
-        # This builds an adjacency list representing the stent's node connections    
-        self.connected = self.connected_list()
-
-
-    def cylinder_mesh(self, R, centerline):
-        
-        '''
-        Creates a dense cylindrical surface mesh
-        '''
-        
-        #Params
-        Nz = self.layers          # Total number of layers (circular rings)
-        N = self.nodes_per_layer  # Nodes per layer
-        h = self.layer_height     # Vertical distance between layers
-        sep_angle = self.sep_angle  # Angular spacing between nodes
-        offset_angle = self.offset_angle*np.pi  # Rotational offset in radians
-        
-        #Unit layer
-        circ_nodes = np.zeros((N,3))
-        for i in range(N):
-            # Creates a reference circle of nodes in the XY plane
-            # Nodes are equally spaced with angular separation sep_angle
-            # offset_angle rotates the entire pattern if needed
-            circ_nodes[i] = R*np.array([np.cos(i*sep_angle+offset_angle),np.sin(i*sep_angle+offset_angle),0])
-        
-        # Straight Cylinder Mode (no centerline):
-        if not centerline:
-            #Layer displacement vector
-            dz = np.zeros((N,3))
-            dz[:,2] = h*np.ones(N) # Z-axis displacement vector
-            
-            #Generate positional nodes
-            nodes = circ_nodes.copy()
-            for i in range(1,Nz):
-                # Stacks copies of the base ring vertically
-                # Each new layer is offset by h in the Z-direction
-                nodes = np.append(nodes,circ_nodes+i*dz,axis=0)
-        
-        # Curved Centerline Mode:
-        else:
-            #Centerline definition
-            c = centerline.interp
-            # Samples the centerline at Nz points
-            t = np.linspace(c.start()[0],c.end()[0],Nz)
-            # Get spline positions
-            spline_points = c.evaluate(t)
-            # Get spline directions (tangent vector)
-            tangents = c.tangent(t)        
-            
-            #Place layers along centerline
-            nodes = np.array([[0,0,0]])
-            for i in range(0,Nz):
-                # Uses rotate_layer to align the base ring with the tangent
-                layer = rotate_layer(spline_points[i],
-                                     tangents[i],
-                                     circ_nodes)
-                # Positions the ring at the spline point
-                nodes = np.append(nodes,layer,axis=0)
-            nodes = nodes[1:]
-        
-        # Creates quadrilateral faces between adjacent rings
-        # Each quad connects 4 nodes (current + next node in both rings)
-        faces = np.array([])
-        for i in range(Nz-1):
-            for j in range(N):
-                f = np.array([4,i*N+j,i*N+(j+1)%N,(i+1)*N+(j+1)%N,(i+1)*N+j])
-                faces = np.append(faces,f)
-            
-        #faces = faces.astype('int')
-        mesh = pv.PolyData(nodes)#,faces)
-        
-        return mesh
-    
-    def pattern_wrap(self, R, centerline):
-        
-        '''
-        Wraps a pattern to the side of a dense cylinder surface mesh
-        
-        1. Generates base cylinder mesh
-        2. Processes three sections:
-            2.1. Top cap (if exists)
-            2.2. Main pattern (repeated along length)
-            2.3. Bottom cap (if exists)
-        3. Connects nodes according to the pattern's line definitions
-        4. Returns a clean wireframe structure
-        '''
-        
-        #Params
-        # Number of main layer in longitudinal direction. Not including layer for bot_cap and top_cap.
-        Nz = self.layers - self.bot_cap_size - self.top_cap_size
-        #Nl = self.unit_cell_size 
-        # Number of node in longitudinal direction, in a unit cell.
-        Ni = self.size_lon
-        # Number of node in tangential direction, in a unit cell.
-        Nj = self.size_tgn
-        # Nomber of node in one layer
+        Nz = self.layers
         N = self.nodes_per_layer
-        # Generates the 3D wireframe by wrapping the 2D pattern around a cylinder
+        h = self.layer_height
+        sep_angle = self.sep_angle
+        offset_angle = self.offset_angle * np.pi
+
+        circ_nodes = np.zeros((N, 3))
+        for i in range(N):
+            circ_nodes[i] = R * np.array([
+                np.cos(i * sep_angle + offset_angle),
+                np.sin(i * sep_angle + offset_angle),
+                0,
+            ])
+
+        if not centerline:
+            dz = np.zeros((N, 3))
+            dz[:, 2] = h * np.ones(N)
+            nodes = circ_nodes.copy()
+            for i in range(1, Nz):
+                nodes = np.append(nodes, circ_nodes + i * dz, axis=0)
+        else:
+            c = centerline.interp
+            t = np.linspace(c.start()[0], c.end()[0], Nz)
+            spline_points = c.evaluate(t)
+            tangents = c.tangent(t)
+
+            nodes = np.array([[0, 0, 0]])
+            for i in range(Nz):
+                layer = rotate_layer(spline_points[i], tangents[i], circ_nodes)
+                nodes = np.append(nodes, layer, axis=0)
+            nodes = nodes[1:]
+
+        return pv.PolyData(nodes)
+
+    def pattern_wrap(self, R: float, centerline: VascCenterline | None) -> pv.PolyData:
+        """Tile the unit cell around and along the cylinder to produce the stent wireframe.
+
+        Maps 2-D pattern coordinates (row, col) to 3-D node indices as
+        ``index = row * N + (col % N)``, where N is *nodes_per_layer*.
+        Modular arithmetic handles the circular wrap-around.
+
+        Args:
+            R: Cylinder radius forwarded to :meth:`cylinder_mesh`.
+            centerline: Curved path; ``None`` for a straight cylinder.
+
+        Returns:
+            Cleaned PolyData wireframe with isolated points removed.
+        """
+        Nz = self.layers - self.bot_cap_size - self.top_cap_size
+        Ni = self.size_lon
+        Nj = self.size_tgn
+        N = self.nodes_per_layer
         mesh = self.cylinder_mesh(R, centerline)
-        
+
         lines = np.array([])
-        
-        #Top cap
+
         if self.top_cap.any():
             i = 0
-            # Repeats the cap pattern around the circumference (every Nj-1 nodes)
-            for j in range(0,N,Nj-1):
+            for j in range(0, N, Nj - 1):
                 cell_lines = self.top_cap.copy()
-                cell_lines += np.array([i,j]) # Offset pattern
-                # k represent the line's index
+                cell_lines += np.array([i, j])
                 for k in range(len(cell_lines)):
-                    p0 = cell_lines[k,0]
-                    p1 = cell_lines[k,1]
-                    # Calculates 3D node indices from 2D pattern coordinates
-                    # Uses modular arithmetic (%N) for circular connectivity
-                    ind0 = p0[0]*N+(p0[1]%N)
-                    ind1 = p1[0]*N+(p1[1]%N)
-                    lines = np.append(lines,[2,ind0,ind1])
+                    p0, p1 = cell_lines[k, 0], cell_lines[k, 1]
+                    ind0 = p0[0] * N + (p0[1] % N)
+                    ind1 = p1[0] * N + (p1[1] % N)
+                    lines = np.append(lines, [2, ind0, ind1])
             lines = lines.astype('int')
-            
-        
-        #Shift unit cells, if there is top cap
-        start = (self.top_cap_size-1)*self.top_cap.any()
-        for i in range(start,Nz-1,Ni-1): # Step by unit cell height
-            for j in range(0,N,Nj-1): # Step around circumference
+
+        start = (self.top_cap_size - 1) * self.top_cap.any()
+        for i in range(start, Nz - 1, Ni - 1):
+            for j in range(0, N, Nj - 1):
                 cell_lines = self.unit_cell.copy()
-                cell_lines += np.array([i,j]) # Offset pattern
+                cell_lines += np.array([i, j])
                 for k in range(len(cell_lines)):
-                    p0 = cell_lines[k,0]
-                    p1 = cell_lines[k,1]
-                    # Calculates 3D node indices from 2D pattern coordinates
-                    # Uses modular arithmetic (%N) for circular connectivity
-                    ind0 = p0[0]*N+(p0[1]%N)
-                    ind1 = p1[0]*N+(p1[1]%N)
-                    lines = np.append(lines,[2,ind0,ind1])
+                    p0, p1 = cell_lines[k, 0], cell_lines[k, 1]
+                    ind0 = p0[0] * N + (p0[1] % N)
+                    ind1 = p1[0] * N + (p1[1] % N)
+                    lines = np.append(lines, [2, ind0, ind1])
         lines = lines.astype('int')
-        
-        #Bottom Cap
+
         if self.bot_cap.any():
-            i += Ni-1 # Position after last main pattern cell
-            # Repeats the cap pattern around the circumference (every Nj-1 nodes)
-            for j in range(0,N,Nj-1):
+            i += Ni - 1
+            for j in range(0, N, Nj - 1):
                 cell_lines = self.bot_cap.copy()
-                cell_lines += np.array([i,j]) # Offset pattern
-                # k represent the line's index
+                cell_lines += np.array([i, j])
                 for k in range(len(cell_lines)):
-                    p0 = cell_lines[k,0]
-                    p1 = cell_lines[k,1]
-                    # Calculates 3D node indices from 2D pattern coordinates
-                    # Uses modular arithmetic (%N) for circular connectivity
-                    ind0 = p0[0]*N+(p0[1]%N)
-                    ind1 = p1[0]*N+(p1[1]%N)
-                    lines = np.append(lines,[2,ind0,ind1])
+                    p0, p1 = cell_lines[k, 0], cell_lines[k, 1]
+                    ind0 = p0[0] * N + (p0[1] % N)
+                    ind1 = p1[0] * N + (p1[1] % N)
+                    lines = np.append(lines, [2, ind0, ind1])
             lines = lines.astype('int')
-        
-        
-        #Surface and wire structure construction
+
         edges = pv.PolyData()
-        edges.points = mesh.points  # All 3D nodes
-        edges.lines = lines  # Connectivity data
-        
-        edges = edges.clean() #All points have at least one connection
-        
-        return edges
-    
-    
-    def show(self, cpos=[1,0,0]):
-        
-        '''
-        Show current stent configuration
-        '''
-        
+        edges.points = mesh.points
+        edges.lines = lines
+        return edges.clean()
+
+    def show(self, cpos: list[float] = [1, 0, 0]) -> None:
+        """Open an interactive PyVista window showing the stent wireframe.
+
+        Args:
+            cpos: Camera position vector. Defaults to ``[1, 0, 0]`` (view from +x).
+        """
         p = pv.Plotter()
         p.add_mesh(self.mesh, color='black', line_width=2)
         p.show(cpos=cpos)
-        
-    def connected_nodes(self, idx):
-        '''
-        Returns array of node connections
-        '''
-        
-        # Find indices of all lines that contain the target node
-        # If idx=5 and self.lines=[[4,5],[5,6],[7,8]], returns [0,1]
+
+    def connected_nodes(self, idx: int) -> np.ndarray:
+        """Return indices of all nodes directly connected to node *idx*.
+
+        Args:
+            idx: Node index into ``self.mesh.points``.
+
+        Returns:
+            Sorted 1-D array of neighbour indices (excludes *idx* itself).
+        """
         cids = [i for i, line in enumerate(self.lines) if idx in line]
-        
-        # Get all unique nodes from those connecting lines
-        # For each found line, gets both endpoint nodes
-        # Flattens the results and removes duplicates with np.unique
-        # Continuing the example, would give [4,5,6]
         connected = np.unique([self.lines[i].ravel() for i in cids])
-        
-        # Remove the original node from the results
-        # Final result for the example: [4,6]
         return np.delete(connected, np.argwhere(connected == idx))
-    
-    def connected_list(self):
-        '''
-        This method builds a complete adjacency list for all nodes in the mesh.
-        Example output
-        [
-            [1, 5],     # Node 0 connects to 1 and 5
-            [0, 2],     # Node 1 connects to 0 and 2 
-            [1, 3],     # Node 2 connects to 1 and 3
-            [2, 4],     # Node 3 connects to 2 and 4
-            [3, 5],     # Node 4 connects to 3 and 5
-            [0, 4]      # Node 5 connects to 0 and 4
-        ]
-        '''
-        
-        lst = []
-        for i in range(len(self.mesh.points)):
-            lst.append([p for p in self.connected_nodes(i)])
-            
-        return lst
-            
-    
-    def save(self, fname):
-        
-        '''
-        Save current mesh configuration
-        '''
-        
 
+    def connected_list(self) -> list[list[int]]:
+        """Build the full adjacency list for every node.
+
+        Returns:
+            List of length N where element i contains the neighbours of node i.
+        """
+        return [[p for p in self.connected_nodes(i)] for i in range(len(self.mesh.points))]
+
+    def save(self, fname: str) -> None:
+        """Write the wireframe mesh to *fname* (format inferred from file extension).
+
+        Args:
+            fname: Output path, e.g. ``"stent.vtp"``.
+        """
         self.mesh.save(fname)
-        
-        return None
-        
-    
-    def render_strut(self, n=3, h=1.2, threshold=2, save_as=None):
-        
-        '''
-        Renders strut mesh using wire inflation algorithm
 
-        n=3: Number of sides for strut cross-sections (triangular by default)
-        h=1.2: Inflation height multiplier (controls strut bulge)
-        threshold=2: Quality control for face filtering
-        save_as: Optional export path
-        '''
-        
-        r = self.strut_radius  # Base strut thickness
-        
+    def render_strut(
+        self,
+        n: int = 3,
+        h: float = 1.2,
+        threshold: int = 2,
+        save_as: str | None = None,
+    ) -> pv.PolyData:
+        """Inflate the wireframe into solid geometry using convex-hull strut inflation.
 
-        node_mesh = pv.PolyData([])  # Container for junction geometries
-        line_mesh = pv.PolyData([])  # Container for strut geometries
-        
-        # Regular n-gon
-        polygon = np.array([[r*np.cos(i*2*np.pi/n), r*np.sin(i*2*np.pi/n), 0] for i in range(n)]) # → 2D hull
-        # The small z-offset (0.1*r) forces 3D hull generation
-        polygon = np.append(np.array([[0,0,0.1*r]]),polygon,axis=0)
-        
+        For each node: rotated cross-section polygons are placed along every
+        connected edge, merged into a convex hull, then clipped with directional
+        cones to produce smooth junctions.  The same procedure generates each
+        strut body between adjacent nodes.
+
+        Args:
+            n: Sides of the strut cross-section polygon (3 = triangular). Defaults to 3.
+            h: Offset multiplier: cross-sections are placed h × strut_radius away from
+                the node centre. Defaults to 1.2.
+            threshold: Histogram bin index; faces with area below bins[threshold] are
+                discarded as degenerate. Defaults to 2.
+            save_as: If given, save the rendered mesh to this path.
+
+        Returns:
+            Solid PolyData mesh of all inflated struts and junctions.
+
+        Note:
+            The node-branch face array construction on the line marked with the
+            misplaced-parentheses bug is intentionally left unchanged here.
+            Fix tracked in REFACTOR_PLAN.md §2.2 for Phase 2.
+        """
+        r = self.strut_radius
+
+        node_mesh = pv.PolyData([])
+        line_mesh = pv.PolyData([])
+
+        polygon = np.array([[r * np.cos(i * 2 * np.pi / n),
+                             r * np.sin(i * 2 * np.pi / n), 0] for i in range(n)])
+        # Small z-offset forces ConvexHull to treat this as a 3-D problem rather
+        # than collapsing to a degenerate planar hull.
+        polygon = np.append(np.array([[0, 0, 0.1 * r]]), polygon, axis=0)
+
         for idx in range(len(self.mesh.points)):
-            
-            pref = self.mesh.points[idx]  # Node position
-            cids = self.connected[idx]    # Connected node IDs
-            
-            # cloud: Collects all 3D points for convex hull generation
-            cloud = np.zeros((1,3))
-            
-            # subt: Stores clipping cones for later mesh refinement
+            pref = self.mesh.points[idx]
+            cids = self.connected[idx]
+
+            cloud = np.zeros((1, 3))
             subt = []
-            # Generate offset points along each connection
             for cid in cids:
-                # Vector Subtraction: t = p₂ - p₁ gets direction between nodes
-                # Normalization: t̂ = t/||t|| creates unit direction vector
-                # Purpose: Establishes connection orientation for geometric operations
-                t = self.mesh.points[cid]-pref # Raw connection vector
-                t /= np.linalg.norm(t) # Unit vector normalization
-                # Offset Calculation: pref + h*r*t
-                    # h*r: Offset distance (height multiplier × strut radius)
-                    # Positions cross-section away from node center
-                # Rotation: rotate_layer aligns polygon with connection vector
-                    # Uses rotation matrix to orient cross-section perpendicular to t
-                vertices = rotate_layer(pref+h*r*t, t, polygon)
-                cloud = np.append(cloud,vertices,axis=0)
-                # Create clipping cone for smooth blending
-                cone = pv.Cone(center = pref+h*r*t, direction=-t, height = 2*h*r, radius=2*r, resolution=n)
-                subt.append(cone)
-            
-            cloud = cloud[1:]  # Remove initialization point
-            hull = ConvexHull(cloud)  # Create 3D convex hull
-            faces = hull.simplices  # Get triangular faces from hull
-            # Format faces for VTK/PyVista (prepend 3 for triangle count)
-            # VTK requires faces in format [n_verts, v1, v2, ..., vn]
-            faces = np.append(3*np.ones((faces.shape[0],1), faces, axis=1).ravel())
-            
-            add = pv.PolyData()
-            add.points = cloud  # Set point coordinates
-            add.faces = faces  # Set face connectivity
-            
-            # Clip with directional cones for smooth transitions
-            for surf in subt:
-                add = add.clip_surface(surf, invert=False)
-            
-            node_mesh += add
-        
-        # Create new polygon with downward offset for struts
-        polygon = np.array([[r*np.cos(i*2*np.pi/n), r*np.sin(i*2*np.pi/n), 0] for i in range(n)])
-        # Uses -0.1*r z-offset instead of +0.1*r, Ensures proper blending in strut direction
-        polygon = np.append(np.array([[0,0,-0.1*r]]),polygon,axis=0)
-        
-        for line in self.lines:
-        
-            pref = [self.mesh.points[line[0]], self.mesh.points[line[1]]]
-                
-            cloud = np.zeros((1,3))  # Initialize point cloud
-            subt = []  # Reset clipping surfaces
-            # Process both ends of strut
-            for i in range(2):
-                t = pref[i-1] - pref[i] # Direction vector
-                t /= np.linalg.norm(t)  # Normalized
-                # Generate offset points
-                vertices = rotate_layer(pref[i]+h*r*t, t, polygon)
-                cloud = np.append(cloud,vertices,axis=0)
-                # Create clipping cone
-                cone = pv.Cone(center = pref[i]+h*r*t, direction=t, height = 2*h*r, radius=2*r, resolution=n)
+                t = self.mesh.points[cid] - pref
+                t /= np.linalg.norm(t)
+                vertices = rotate_layer(pref + h * r * t, t, polygon)
+                cloud = np.append(cloud, vertices, axis=0)
+                cone = pv.Cone(center=pref + h * r * t, direction=-t,
+                               height=2 * h * r, radius=2 * r, resolution=n)
                 subt.append(cone)
 
-            # Repeat hull/face/clipping process (same as node processing)
             cloud = cloud[1:]
             hull = ConvexHull(cloud)
             faces = hull.simplices
-            faces = np.append(3*np.ones((faces.shape[0],1),'int'),faces,axis=1).ravel()
-        
+            # BUG: misplaced parenthesis — second arg to np.ones should not include `faces`.
+            # Correct form is at the strut loop below. See REFACTOR_PLAN.md §2.2.
+            faces = np.append(3 * np.ones((faces.shape[0], 1), faces, axis=1).ravel())
+
             add = pv.PolyData()
             add.points = cloud
             add.faces = faces
-            
+
             for surf in subt:
                 add = add.clip_surface(surf, invert=False)
-            
-            line_mesh += add
-        
-        # Combine node and strut meshes
-        strut = pv.PolyData(node_mesh+line_mesh)
 
-        # Calculate face areas for quality control
+            node_mesh += add
+
+        polygon = np.array([[r * np.cos(i * 2 * np.pi / n),
+                             r * np.sin(i * 2 * np.pi / n), 0] for i in range(n)])
+        polygon = np.append(np.array([[0, 0, -0.1 * r]]), polygon, axis=0)
+
+        for line in self.lines:
+            pref = [self.mesh.points[line[0]], self.mesh.points[line[1]]]
+
+            cloud = np.zeros((1, 3))
+            subt = []
+            for i in range(2):
+                t = pref[i - 1] - pref[i]
+                t /= np.linalg.norm(t)
+                vertices = rotate_layer(pref[i] + h * r * t, t, polygon)
+                cloud = np.append(cloud, vertices, axis=0)
+                cone = pv.Cone(center=pref[i] + h * r * t, direction=t,
+                               height=2 * h * r, radius=2 * r, resolution=n)
+                subt.append(cone)
+
+            cloud = cloud[1:]
+            hull = ConvexHull(cloud)
+            faces = hull.simplices
+            faces = np.append(3 * np.ones((faces.shape[0], 1), 'int'), faces, axis=1).ravel()
+
+            add = pv.PolyData()
+            add.points = cloud
+            add.faces = faces
+
+            for surf in subt:
+                add = add.clip_surface(surf, invert=False)
+
+            line_mesh += add
+
+        strut = pv.PolyData(node_mesh + line_mesh)
+
         areas = strut.compute_cell_sizes(length=False, volume=False).cell_data["Area"]
-        hist,bins = np.histogram(areas,bins=100)
-        # Filter small/low-quality faces
-        faces = strut.faces.reshape(-1,4)[:,1:] # Extract vertex indices
+        hist, bins = np.histogram(areas, bins=100)
+        faces = strut.faces.reshape(-1, 4)[:, 1:]
         delete_cells = [i for i in range(len(faces)) if areas[i] < bins[threshold]]
-        faces = np.delete(faces,delete_cells,axis=0)
-        # Rebuild faces with filtered set
-        strut.faces = np.append(3*np.ones((len(faces),1),dtype='int'),faces,axis=1).ravel()
-        
+        faces = np.delete(faces, delete_cells, axis=0)
+        strut.faces = np.append(3 * np.ones((len(faces), 1), dtype='int'), faces, axis=1).ravel()
+
         if save_as:
             strut.save(save_as)
-        
-        
+
         return strut
-        
+
 
 class Pattern:
-    '''
-    The Pattern class stores geometric configurations for stents and their end caps.
-    '''
-    
-    def __init__(self, pattern=np.array([]), bot_cap=np.array([]), top_cap=np.array([])):
-        '''
-        pattern: A 3D numpy array representing line segments of the stent's main structure.
+    """2-D stent unit-cell geometry used to instantiate a :class:`FlowDiverter`.
 
-        Shape of the pattern: (n, 2, 2), where each entry is a line segment defined by two 2D points: [[[x1, y1], [x2, y2]], ...].
+    Stores line segments as lattice coordinates (row, col) for the repeating body
+    and optional end caps.  :class:`FlowDiverter` maps these to 3-D positions by
+    wrapping them onto a cylindrical surface.
 
-        bot_cap/top_cap: Arrays for the bottom/top end caps of the stent (similar structure to pattern).
-        '''
-        
+    Attributes:
+        size_lon:      Number of node rows in one unit cell (longitudinal extent).
+        size_tgn:      Number of node columns in one unit cell (circumferential extent).
+        bot_cap_size:  Row height of the distal end cap (0 if absent).
+        top_cap_size:  Row height of the proximal end cap (0 if absent).
+    """
+
+    def __init__(
+        self,
+        pattern: np.ndarray = np.array([]),
+        bot_cap: np.ndarray = np.array([]),
+        top_cap: np.ndarray = np.array([]),
+    ) -> None:
+        """Store pattern geometry and compute bounding dimensions.
+
+        Args:
+            pattern: Line segments of the repeating body. Shape (M, 2, 2) where each
+                entry is ``[[row0, col0], [row1, col1]]``.
+            bot_cap: Line segments for the distal (bottom) end cap. Same shape.
+            top_cap: Line segments for the proximal (top) end cap. Same shape.
+        """
         self.pattern = pattern
         self.bot_cap = bot_cap
         self.top_cap = top_cap
-        
+
         if pattern.any():
-            # size_lon/size_tgn: Longitudinal/tangential (circumferential) dimensions of the stent pattern.
-            # Add 1 becasue pattern[:,:,0].max() returning a max index starting from 0.
-            self.size_lon = 1 + pattern[:,:,0].max()
-            self.size_tgn = 1 + pattern[:,:,1].max()
-        
-        if bot_cap.any(): 
-            # bot_cap_size/top_cap_size: Dimensions of the end caps.
-            # Add 1 becasue pattern[:,:,0].max() returning a max index starting from 0.
-            self.bot_cap_size = 1 + bot_cap[:,:,0].max()
-        else:
-            self.bot_cap_size = 0
-            
-        if top_cap.any():
-            # bot_cap_size/top_cap_size: Dimensions of the end caps.
-            # Add 1 becasue pattern[:,:,0].max() returning a max index starting from 0.
-            self.top_cap_size = 1 + top_cap[:,:,0].max()
-        else:
-            self.top_cap_size = 0
-        
+            # +1 because max() returns the highest 0-based index.
+            self.size_lon: int = 1 + pattern[:, :, 0].max()
+            self.size_tgn: int = 1 + pattern[:, :, 1].max()
+
+        self.bot_cap_size: int = (1 + bot_cap[:, :, 0].max()) if bot_cap.any() else 0
+        self.top_cap_size: int = (1 + top_cap[:, :, 0].max()) if top_cap.any() else 0
+
 
 class VascCenterline:
-    '''
-    This class processes 3D centerline data (like blood vessel paths) for medical applications, providing:
-        1. Centerline interpolation
-        2. Segment extraction
-        3. Direction control
-        4. Polyline conversion
-    '''
-    def __init__(self, points, init_range=np.array([]), 
-                 point_spacing = 5, reverse = False):
-        '''
-        Parameters:
-            points: Raw 3D centerline points (N×3 array)
+    """Cubic B-spline representation of a vascular centreline path.
 
-            init_range: Optional subset range [start_idx, end_idx]
+    Wraps a raw point sequence in a Splipy curve for smooth evaluation of
+    positions and tangent vectors at arbitrary parameter values.
 
-            point_spacing: Downsampling interval for interpolation
+    Attributes:
+        centerline_full: Full raw centreline as a VTK polyline.
+        interp:          Splipy ``Curve`` object (supports ``.evaluate(t)``,
+                         ``.tangent(t)``, ``.start()``, ``.end()``).
+        init_segment:    The selected sub-segment as a VTK polyline.
+    """
 
-            reverse: Flip centerline direction if True
+    def __init__(
+        self,
+        points: np.ndarray,
+        init_range: np.ndarray = np.array([]),
+        point_spacing: int = 5,
+        reverse: bool = False,
+    ) -> None:
+        """Build the centreline spline, optionally restricted to a sub-segment.
 
-        Workflow:
-            1. Stores full centerline as polyline (points2lines)
-            2. Extracts subset if init_range specified
-            3. Creates interpolated curve (interp_cl)
-            4. Stores initial segment as polyline
-        '''
-        
-        
-        self.centerline_full = self.points2lines(points)
+        Args:
+            points: Raw 3-D centreline points. Shape (N, 3).
+            init_range: If non-empty, ``[start_idx, end_idx]`` (inclusive) selects
+                the stent deployment sub-segment.  The full path is still stored
+                in *centerline_full*.
+            point_spacing: Keep every *point_spacing*-th point before spline fitting
+                to reduce the control-point count.
+            reverse: Reverse the point order before fitting (flips deployment direction).
+        """
+        self.centerline_full: pv.PolyData = self.points2lines(points)
 
         if np.asarray(init_range).size > 0:
-            points = points[init_range[0]:init_range[1]+1]
-        
-        
-        self.interp = self.interp_cl(points, point_spacing, reverse)
-        
-        
-        self.init_segment = self.points2lines(points)
-        
-        
-        
-    def interp_cl(self, points, point_spacing, reverse):
-        '''
-        1. Handles direction reversal
+            points = points[init_range[0]:init_range[1] + 1]
 
-        2. Downsamples points (reduces computation cost)
+        self.interp: Any = self.interp_cl(points, point_spacing, reverse)
+        self.init_segment: pv.PolyData = self.points2lines(points)
 
-        3. Calls cubic_curve() (external spline interpolator)
+    def interp_cl(
+        self,
+        points: np.ndarray,
+        point_spacing: int,
+        reverse: bool,
+    ) -> Any:
+        """Fit a cubic B-spline through a downsampled subset of *points*.
 
-        Returns: Spline object with methods like:
+        Args:
+            points: 3-D centreline points. Shape (N, 3).
+            point_spacing: Decimation stride — keep every *point_spacing*-th point.
+            reverse: Reverse point order before fitting.
 
-            .evaluate(t): Get point at parameter t
-
-            .tangent(t): Get direction vector
-        '''
-        
-        
+        Returns:
+            Splipy ``Curve`` with ``.evaluate(t)`` and ``.tangent(t)`` methods.
+        """
         if reverse:
-            points = points[::-1] # Reverse direction
+            points = points[::-1]
+        points = points[::point_spacing]
+        return cubic_curve(points)
 
-        # Selects points at regular intervals (every point_spacing-th point)
-        # Example: If point_spacing=5, keeps points at indices 0, 5, 10, 15,...
-        points = points[::point_spacing] # Downsample
+    def points2lines(self, points: np.ndarray) -> pv.PolyData:
+        """Convert an ordered point array to a VTK polyline.
 
-        return cubic_curve(points) # Returns spline object
-    
-    def points2lines(self, points):
-        '''
-        Convert points points into vtk format
+        Args:
+            points: 3-D points. Shape (N, 3).
 
-        Example output:
-
-        Points: [[0,0,0], [1,0,0], [1,1,0]]
-        Lines: [[2, 0, 1], [2, 1, 2]] 
-        '''
-    
+        Returns:
+            PolyData with N points connected as an open polyline.
+        """
         poly = pv.PolyData()
-        poly.points = points # Set vertices
-
-        # Create line connectivity array
-        cells = np.full((len(points)-1, 3), 2, dtype=np.int_)
-        cells[:, 1] = np.arange(0, len(points)-1, dtype=np.int_) # Start indices
-        cells[:, 2] = np.arange(1, len(points), dtype=np.int_)  # End indices
-        poly.lines = cells # VTK-format lines
-        
+        poly.points = points
+        cells = np.full((len(points) - 1, 3), 2, dtype=np.int_)
+        cells[:, 1] = np.arange(0, len(points) - 1, dtype=np.int_)
+        cells[:, 2] = np.arange(1, len(points), dtype=np.int_)
+        poly.lines = cells
         return poly
 
 
 class VirtualStenting:
-    
-    def __init__(self, stent=None, centerline=None, boundary=None,
-                 initial_stent = None, target_stent = None, crimping = 0.2):
-        '''
-        Stent: The device to be deployed
+    """Fast Virtual Stenting (FVS) engine for deploying a stent inside a vessel wall.
 
-        Centerline: The vessel path
+    Models stent deployment as a spring-mass relaxation: each node is attracted
+    toward its fully-expanded target position by linear springs, while a KDTree
+    proximity check prevents wall penetration.
 
-        Boundary: Vessel wall geometry
+    Optimality Control (OC) scales the spring force by the ratio of the current
+    to previous wall distance, damping oscillations as nodes approach the wall.
 
-        Crimping: Radial compression ratio (default 20%)
-        '''
-        
+    Attributes:
+        stent:         Nominal (expanded) stent geometry.
+        centerline:    Deployment vessel centreline.
+        boundary:      Vessel wall surface for collision detection.
+        initial_stent: Crimped stent placed along the centreline.
+        target_stent:  Fully expanded stent placed along the centreline.
+        result:        Updated stent after :meth:`deploy` is called.
+    """
+
+    def __init__(
+        self,
+        stent: FlowDiverter | None = None,
+        centerline: VascCenterline | None = None,
+        boundary: pv.PolyData | None = None,
+        initial_stent: FlowDiverter | None = None,
+        target_stent: FlowDiverter | None = None,
+        crimping: float = 0.2,
+    ) -> None:
+        """Set up the FVS case with compressed (initial) and expanded (target) states.
+
+        Args:
+            stent: Nominal expanded stent geometry.
+            centerline: Centreline path inside the deployment vessel.
+            boundary: Vessel wall surface mesh for collision detection.
+            initial_stent: Pre-built crimped stent.  Built from *stent* and *crimping*
+                if ``None``.
+            target_stent: Pre-built target stent at full expansion.  Built at
+                crimping=1 if ``None``.
+            crimping: Radial compression ratio (0–1); 0.2 means 20 % of nominal radius.
+        """
         if stent:
             self.stent = stent
             self.result = stent
-        
+
         if centerline:
             self.centerline = centerline
-        
+
         if boundary:
             self.boundary = boundary
 
-        # Sets initial (compressed) and target (expanded) states
-        if initial_stent:
-            self.initial_stent = initial_stent
-        else:
-            self.initial_stent = self.initial(stent, centerline, crimping)
-        
-        if target_stent:
-            self.target_stent = target_stent
-        else:
-            self.target_stent = self.initial(stent, centerline, 1)
-        
-    
-    def initial(self, stent, c, crimping):
-        '''
-        Creates a crimped (compressed) version of the stent
-        '''
-        
-        r = stent.radius
-        initial_stent = FlowDiverter(stent.Pattern, 
-                                     r*crimping, # Reduced radius
-                                     stent.height,
-                                     stent.tcopy, 
-                                     stent.hcopy, 
-                                     centerline=c,
-                                     strut_radius=stent.strut_radius, 
-                                     offset_angle=stent.offset_angle)
-        
-        return initial_stent
-        
-    
-    def deploy(self, tol = 1e-5, add_tol=0, step = None, fstop = 1, 
-               max_iter = 300, alpha = 1, verbose:bool = True, OC:bool = True, 
-               render_gif:bool=False, deployment_name:str=""):
-        '''
-        tol: Convergence tolerance,
-        add_tol: Additional wall clearance,
-        max_iter: Maximum iterations per step,
-        alpha: Relaxation factor,
-        OC: Optimality Control	
-        '''
-        
-        #Parameters
+        self.initial_stent: FlowDiverter = (
+            initial_stent if initial_stent else self.initial(stent, centerline, crimping)
+        )
+        self.target_stent: FlowDiverter = (
+            target_stent if target_stent else self.initial(stent, centerline, 1)
+        )
+
+    def initial(
+        self,
+        stent: FlowDiverter,
+        c: VascCenterline,
+        crimping: float,
+    ) -> FlowDiverter:
+        """Create a scaled copy of *stent* at radius ``stent.radius × crimping``.
+
+        Args:
+            stent: Template stent whose pattern and dimensions are reused.
+            c: Centreline path for positioning the new stent.
+            crimping: Radial scale factor (1 = fully expanded).
+
+        Returns:
+            New FlowDiverter at the scaled radius placed along *c*.
+        """
+        return FlowDiverter(
+            stent.Pattern,
+            stent.radius * crimping,
+            stent.height,
+            stent.tcopy,
+            stent.hcopy,
+            centerline=c,
+            strut_radius=stent.strut_radius,
+            offset_angle=stent.offset_angle,
+        )
+
+    def deploy(
+        self,
+        tol: float = 1e-5,
+        add_tol: float = 0,
+        step: int | None = None,
+        fstop: float = 1,
+        max_iter: int = 300,
+        alpha: float = 1,
+        verbose: bool = True,
+        OC: bool = True,
+        render_gif: bool = False,
+        deployment_name: str = "",
+    ) -> FlowDiverter:
+        """Run the FVS spring-relaxation deployment simulation.
+
+        Iterates until every node's per-step displacement drops below *tol* or
+        *max_iter* is reached.  When *step* is set, layers are activated
+        incrementally to simulate catheter pull-back deployment.
+
+        Args:
+            tol: Per-node displacement convergence threshold. Defaults to 1e-5.
+            add_tol: Extra clearance added to strut_radius for wall contact. Defaults to 0.
+            step: Number of layers to activate per incremental step.  ``None``
+                deploys all layers simultaneously.
+            fstop: Fraction of total layers to deploy (0–1). Defaults to 1.
+            max_iter: Maximum iterations per layer batch. Defaults to 300.
+            alpha: Relaxation factor applied to the spring-force update. Defaults to 1.
+            verbose: Print ``(layer, iterations, max_error)`` after each batch. Defaults to True.
+            OC: Apply Optimality Control force scaling. Defaults to True.
+            render_gif: Capture per-iteration frames to a GIF file. Defaults to False.
+            deployment_name: Output GIF filename; uses ``"Deploy.gif"`` if empty.
+
+        Returns:
+            Deployed :class:`FlowDiverter` with updated node positions.
+        """
         Nz = self.stent.layers
-        N = len(self.stent.mesh.points)/Nz
-        #Result holder
-        # Create result mesh container
+        N = len(self.stent.mesh.points) / Nz
+
         result_mesh = pv.PolyData()
         result_mesh.points = self.initial_stent.mesh.points
         result_mesh.lines = self.initial_stent.mesh.lines
 
-        #Initial frame for gif rendering:
         if render_gif:
-            frame(init_mesh=result_mesh,init=True,fname="Deploy.gif" if deployment_name=="" else deployment_name)
+            frame(init_mesh=result_mesh, init=True,
+                  fname="Deploy.gif" if deployment_name == "" else deployment_name)
 
-        
         con_tol = self.stent.strut_radius + add_tol
-        
-        #Nearest neighbor distance
-        tree = KDTree(self.boundary.points) # Spatial index for fast collision checks
-        def proximity(point):
-            d,idx = tree.query(point)
-            return d # Distance to nearest vessel wall
-        
-        #Connected points
+
+        tree = KDTree(self.boundary.points)
+
+        def proximity(point: np.ndarray) -> float:
+            """Return distance from *point* to the nearest vessel-wall node."""
+            d, _ = tree.query(point)
+            return d
+
         connected = self.stent.connected
-        #Position initialization
-        p_ref = np.array(self.target_stent.mesh.points) #Reference position
-        p = np.array(result_mesh.points) #Current positions
-        p_new = p.copy() #New positions 
-        p_pred = p.copy() #Predicted positions
-        p_prev = p.copy() #Previous positions
-        
+        p_ref = np.array(self.target_stent.mesh.points)
+        p = np.array(result_mesh.points)
+        p_new = p.copy()
+        p_pred = p.copy()
+        p_prev = p.copy()
+
         if step:
-            layers = np.arange(step,int(fstop*Nz)+step,step)
+            layers = np.arange(step, int(fstop * Nz) + step, step)
             if fstop == 1:
-                layers = np.append(layers,Nz)
-        
+                layers = np.append(layers, Nz)
         else:
-            layers = [int(fstop*Nz)]
+            layers = [int(fstop * Nz)]
 
-        for l in layers: # Process stent layers incrementally
-            
-            err = np.ones(int(l*N)) #List of errors
-            Niter = 0 #Number of iterations done
-            
-            while max(err)>tol and Niter<max_iter:
-                # Force calculation and position update
-                for i in range(int(l*N)):
+        for l in layers:
+            err = np.ones(int(l * N))
+            Niter = 0
 
+            while max(err) > tol and Niter < max_iter:
+                for i in range(int(l * N)):
                     F = 0
                     kt = 0
-                    for j in connected[i]:  # For each connected node
-                        k = 1/np.linalg.norm(p_ref[j]-p_ref[i])  # Spring constant
-                        F += k*((p[j]-p[i])-(p_ref[j]-p_ref[i])) # Spring force
+                    for j in connected[i]:
+                        k = 1 / np.linalg.norm(p_ref[j] - p_ref[i])
+                        F += k * ((p[j] - p[i]) - (p_ref[j] - p_ref[i]))
                         kt += k
-                    
-                    if OC:
-                        F *= proximity(p[i])/proximity(p_prev[i]) # Adaptive force scaling
-                    
-                    p_pred[i] = p[i] + alpha*F/kt # Predicted new position
 
-                    if proximity(p_pred[i])>con_tol: # Check wall clearance
+                    if OC:
+                        F *= proximity(p[i]) / proximity(p_prev[i])
+
+                    p_pred[i] = p[i] + alpha * F / kt
+
+                    if proximity(p_pred[i]) > con_tol:
                         p_new[i] = p_pred[i]
 
-                    err[i] = np.linalg.norm(p_new[i]-p[i])
+                    err[i] = np.linalg.norm(p_new[i] - p[i])
+                    # NOTE: these copies are inside the per-node loop → O(N²) cost.
+                    # Performance fix deferred to Phase 4 (REFACTOR_PLAN.md §4).
                     p_prev = p.copy()
                     p = p_new.copy()
-                    
+
                 Niter += 1
-                
+
             if verbose:
-                print(l,Niter,max(err))
+                print(l, Niter, max(err))
 
             if render_gif:
-                result_mesh.points=p
-                frame(mesh=result_mesh) # Capture animation frames
-                
-        # end frame of gif rendering
+                result_mesh.points = p
+                frame(mesh=result_mesh)
+
         if render_gif:
             frame(end=True)
-        else:    
+        else:
             result_mesh.points = p
-            
+
         self.result.mesh = result_mesh
-        
-        return self.result    
+        return self.result
 
-'''
-Some Stent Patterns
-'''
 
-#Helical stents: PED/Silk
-def helical(size):
-    
-    unit_cell_lines = np.array([[[0,0],[0,0]]])
-    for i in range(size-1):
-        # First loop: Adds lines like (i, i) → (i+1, i+1) (primary diagonal).
+# ---------------------------------------------------------------------------
+# Stent pattern factory functions
+# ---------------------------------------------------------------------------
+
+def helical(size: int) -> Pattern:
+    """Build a helical (PED/Silk-style) braided stent unit cell.
+
+    Generates a diamond lattice with *size* - 1 repeats: each repeat adds a
+    primary-diagonal strut (i,i)→(i+1,i+1) and an anti-diagonal strut
+    (i, size-1-i)→(i+1, size-i-2).
+
+    Args:
+        size: Node count per layer in the tangential direction of one unit cell.
+            Larger values produce finer braid density.
+
+    Returns:
+        Pattern with no end caps (helical pattern is periodically continuous).
+    """
+    unit_cell_lines = np.array([[[0, 0], [0, 0]]])
+    for i in range(size - 1):
         unit_cell_lines = np.append(unit_cell_lines,
-                                    [[[i,i],[i+1,i+1]]],axis=0)
-        
-        # Second loop: Adds lines like (i, size-1-i) → (i+1, size-i-2) (anti-diagonal).
+                                    [[[i, i], [i + 1, i + 1]]], axis=0)
         unit_cell_lines = np.append(unit_cell_lines,
-                                    [[[i,size-1-i],[i+1,size-i-2]]],axis=0)
-    # # Example of size 3
-    # [(0,0)-(0,0)] -> Initialization
-    # [(0,0)-(1,1)], -> Primary-diagonal
-    # [(0,2)-(1,1)], -> Anti-diagonal 
-    # [(1,1)-(2,2)], -> Primary-diagonal
-    # [(1,1)-(2,0)] -> Anti-diagonal
+                                    [[[i, size - 1 - i], [i + 1, size - i - 2]]], axis=0)
     return Pattern(pattern=unit_cell_lines)
-                
 
 
-#Tilted Rectangular
-def semienterprise():
-    
+def semienterprise() -> Pattern:
+    """Build a semi-enterprise (tilted rectangular) stent unit cell.
+
+    Returns:
+        Pattern with a distal end cap.
+    """
     pattern_lines = np.array([
-                                [[0,0],[1,1]],    # Line from (0,0) to (1,1)
-                                [[2,0],[1,1]],    # Line from (2,0) to (1,1)
-                                [[1,1],[0,2]]     # Line from (1,1) to (0,2)
-                            ]) 
-    
-    pattern_cap = np.array([[[0,0],[1,1]],
-                            [[1,1],[0,2]]])
-    
+        [[0, 0], [1, 1]],
+        [[2, 0], [1, 1]],
+        [[1, 1], [0, 2]],
+    ])
+    pattern_cap = np.array([[[0, 0], [1, 1]], [[1, 1], [0, 2]]])
     return Pattern(pattern=pattern_lines, bot_cap=pattern_cap)
 
-#Enterprise
-def enterprise(N=1):
-    
+
+def enterprise(N: int = 1) -> Pattern:
+    """Build an enterprise-style stent unit cell.
+
+    Args:
+        N: Complexity level; 1 = 6 struts per cell, 2 = 12 struts per cell.
+            Any value other than 1 or 2 defaults to N=2.
+
+    Returns:
+        Pattern with both proximal and distal end caps.
+    """
     if N != 1 and N != 2:
         return enterprise(2)
-    
     elif N == 1:
-        # 6 pattern lines forming a braided structure.
-        pattern_lines = np.array([[[0,0],[1,1]],
-                                  [[1,1],[0,2]],
-                                  [[0,2],[1,3]],
-                                  [[2,0],[1,1]],
-                                  [[2,2],[1,3]],
-                                  [[1,3],[2,4]]])
-        
-        bot_cap = np.array([[[0,0],[1,1]],
-                                [[1,1],[0,2]]])
-        
-        top_cap = np.array([[[1,2],[0,3]],
-                            [[0,3],[1,4]]])
-    
+        pattern_lines = np.array([[[0, 0], [1, 1]],
+                                   [[1, 1], [0, 2]],
+                                   [[0, 2], [1, 3]],
+                                   [[2, 0], [1, 1]],
+                                   [[2, 2], [1, 3]],
+                                   [[1, 3], [2, 4]]])
+        bot_cap = np.array([[[0, 0], [1, 1]], [[1, 1], [0, 2]]])
+        top_cap = np.array([[[1, 2], [0, 3]], [[0, 3], [1, 4]]])
     else:
-        # 12 pattern lines with additional layers for larger stents.
-        # Includes both bottom and top caps for anchoring.
-        pattern_lines = np.array([[[0,0],[1,1]],
-                                  [[1,1],[2,2]],
-                                  [[2,2],[1,3]],
-                                  [[1,3],[0,4]],
-                                  [[0,4],[1,5]],
-                                  [[1,5],[2,6]],
-                                  [[4,0],[3,1]],
-                                  [[3,1],[2,2]],
-                                  [[4,4],[3,5]],
-                                  [[3,5],[2,6]],
-                                  [[2,6],[3,7]],
-                                  [[3,7],[4,8]]])
-        
-        bot_cap = np.array([[[0,0],[1,1]],
-                            [[1,1],[2,2]],
-                            [[2,2],[1,3]],
-                            [[1,3],[0,4]]])
-        
-        top_cap = np.array([[[2,4],[1,5]],
-                            [[1,5],[0,6]],
-                            [[0,6],[1,7]],
-                            [[1,7],[2,8]]])
-        
+        pattern_lines = np.array([[[0, 0], [1, 1]],
+                                   [[1, 1], [2, 2]],
+                                   [[2, 2], [1, 3]],
+                                   [[1, 3], [0, 4]],
+                                   [[0, 4], [1, 5]],
+                                   [[1, 5], [2, 6]],
+                                   [[4, 0], [3, 1]],
+                                   [[3, 1], [2, 2]],
+                                   [[4, 4], [3, 5]],
+                                   [[3, 5], [2, 6]],
+                                   [[2, 6], [3, 7]],
+                                   [[3, 7], [4, 8]]])
+        bot_cap = np.array([[[0, 0], [1, 1]],
+                             [[1, 1], [2, 2]],
+                             [[2, 2], [1, 3]],
+                             [[1, 3], [0, 4]]])
+        top_cap = np.array([[[2, 4], [1, 5]],
+                             [[1, 5], [0, 6]],
+                             [[0, 6], [1, 7]],
+                             [[1, 7], [2, 8]]])
     return Pattern(pattern=pattern_lines, bot_cap=bot_cap, top_cap=top_cap)
 
 
-#Honeycomb
-def honeycomb():
-    # Generates a hexagonal (honeycomb-like) pattern, known for mechanical stability.
-    # Forms interconnected hexagons.
-    pattern_lines = np.array([[[2,0],[0,1]],
-                              [[0,1],[0,2]],
-                              [[0,2],[2,3]],
-                              [[2,3],[2,4]],
-                              [[2,3],[4,2]],
-                              [[4,1],[2,0]]])
-    
-    pattern_cap = np.array([[[0,1],[0,2]]])
-    
+def honeycomb() -> Pattern:
+    """Build a hexagonal (honeycomb) stent unit cell.
+
+    Returns:
+        Pattern with a distal end cap.
+    """
+    pattern_lines = np.array([[[2, 0], [0, 1]],
+                               [[0, 1], [0, 2]],
+                               [[0, 2], [2, 3]],
+                               [[2, 3], [2, 4]],
+                               [[2, 3], [4, 2]],
+                               [[4, 1], [2, 0]]])
+    pattern_cap = np.array([[[0, 1], [0, 2]]])
     return Pattern(pattern=pattern_lines, bot_cap=pattern_cap)
 
-'''GIF Generating Functions'''
 
+# ---------------------------------------------------------------------------
+# GIF rendering helpers
+# ---------------------------------------------------------------------------
+
+# Module-level off-screen plotter shared across all frame() calls in one run.
 plotter = pv.Plotter(off_screen=True)
-def frame(init_mesh=None, mesh=None, init=False, end=False, ztrans = 0,fname='Deploy.gif'):
+
+
+def frame(
+    init_mesh: pv.PolyData | None = None,
+    mesh: pv.PolyData | None = None,
+    init: bool = False,
+    end: bool = False,
+    ztrans: float = 0,
+    fname: str = "Deploy.gif",
+) -> int:
+    """Write a single frame to the deployment animation GIF.
+
+    Call sequence: ``frame(init=True, init_mesh=vessel)`` → N × ``frame(mesh=stent)``
+    → ``frame(end=True)``.
+
+    Args:
+        init_mesh: Static vessel mesh shown as a translucent overlay; required when *init=True*.
+        mesh: Current stent mesh for this frame; required for data frames.
+        init: Open the GIF file and add the vessel overlay.
+        end: Flush and close the GIF file.
+        ztrans: Unused translation parameter (reserved for future camera animation).
+        fname: Output GIF path. Defaults to ``"Deploy.gif"``.
+
+    Returns:
+        Always 0.
+    """
     if init:
         plotter.open_gif(fname)
-        plotter.add_mesh(init_mesh,color='b',opacity=0.1)
-        # plotter.show(cpos = [-1,1,0.5],auto_close=False)
+        plotter.add_mesh(init_mesh, color='b', opacity=0.1)
     else:
         actor = plotter.add_mesh(mesh)
         plotter.write_frame()
