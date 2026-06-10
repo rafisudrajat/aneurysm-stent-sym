@@ -483,8 +483,7 @@ class FlowDiverter:
         strut = pv.PolyData(node_mesh+line_mesh)
 
         # Calculate face areas for quality control
-        # areas = strut.compute_cell_sizes(length=False,volume=False).cell_arrays['Area']
-        areas = strut.compute_cell_sizes(length=False,volume=False).cell_data['Area']
+        areas = strut.compute_cell_sizes(length=False, volume=False).cell_data["Area"]
         hist,bins = np.histogram(areas,bins=100)
         # Filter small/low-quality faces
         faces = strut.faces.reshape(-1,4)[:,1:] # Extract vertex indices
@@ -568,8 +567,8 @@ class VascCenterline:
         
         
         self.centerline_full = self.points2lines(points)
-        
-        if init_range:
+
+        if np.asarray(init_range).size > 0:
             points = points[init_range[0]:init_range[1]+1]
         
         

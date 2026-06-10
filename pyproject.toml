@@ -1,0 +1,66 @@
+[project]
+name = "aneurysm-stent-sim"
+version = "0.1.0"
+description = "Fast Virtual Stenting simulation for double-stent flow diverter deployment"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "pyvista>=0.43",
+    "splipy>=1.5,<2",
+    "trimesh>=3.14",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+    "black>=24.0",
+]
+
+# NOTE: flat-script layout for now; Phase 2 migrates to src/stenting/
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = []  # no installable package yet; Phase 2 moves to src/stenting/
+
+# ---------------------------------------------------------------------------
+# Ruff — linter + import sorter
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# E/W = pycodestyle, F = pyflakes, I = isort
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",   # line too long — black handles formatting
+    "F401",   # unused imports — too many in current code, fix in Phase 2
+    "F403",   # star imports — fix in Phase 2
+    "F405",   # may be from star import — fix in Phase 2
+]
+
+# ---------------------------------------------------------------------------
+# Black — formatter
+# ---------------------------------------------------------------------------
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+
+# ---------------------------------------------------------------------------
+# Pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v"
+# NOTE: ROS Jazzy injects broken pytest plugins via PYTHONPATH on this machine.
+# Always run tests with:  PYTHONPATH="" uv run pytest
+# or add to your shell alias:  alias pytest-stent='PYTHONPATH="" uv run pytest'
