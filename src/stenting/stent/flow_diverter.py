@@ -99,31 +99,24 @@ class FlowDiverter:
         sep_angle = self.sep_angle
         offset_angle = self.offset_angle * np.pi
 
-        circ_nodes = np.zeros((N, 3))
-        for i in range(N):
-            circ_nodes[i] = R * np.array([
-                np.cos(i * sep_angle + offset_angle),
-                np.sin(i * sep_angle + offset_angle),
-                0,
-            ])
+        angles = np.arange(N) * sep_angle + offset_angle
+        circ_nodes = R * np.column_stack([np.cos(angles), np.sin(angles), np.zeros(N)])
 
         if not centerline:
-            dz = np.zeros((N, 3))
-            dz[:, 2] = h * np.ones(N)
-            nodes = circ_nodes.copy()
-            for i in range(1, Nz):
-                nodes = np.append(nodes, circ_nodes + i * dz, axis=0)
+            # Stack rings along z: node (layer i, slot k) lives at circ_nodes[k] + [0,0,i*h].
+            z_offsets = np.arange(Nz) * h                       # (Nz,)
+            nodes = (circ_nodes[None, :, :] +
+                     np.array([[[0., 0., 1.]]]) * z_offsets[:, None, None])
+            nodes = nodes.reshape(-1, 3)
         else:
             c = centerline.interp
             t = np.linspace(c.start()[0], c.end()[0], Nz)
             spline_points = c.evaluate(t)
             tangents = c.tangent(t)
-
-            nodes = np.array([[0, 0, 0]])
-            for i in range(Nz):
-                layer = rotate_layer(spline_points[i], tangents[i], circ_nodes)
-                nodes = np.append(nodes, layer, axis=0)
-            nodes = nodes[1:]
+            nodes = np.concatenate(
+                [rotate_layer(spline_points[i], tangents[i], circ_nodes) for i in range(Nz)],
+                axis=0,
+            )
 
         return pv.PolyData(nodes)
 
@@ -147,7 +140,8 @@ class FlowDiverter:
         Nj = self.size_tgn
         mesh = self.cylinder_mesh(R, centerline)
 
-        lines = np.array([])
+        # Collect all VTK line segments as (2, ind0, ind1) triples, then stack once.
+        segs: list[tuple[int, int, int]] = []
 
         if self.top_cap.any():
             i = 0
@@ -156,10 +150,7 @@ class FlowDiverter:
                 cell_lines += np.array([i, j])
                 for k in range(len(cell_lines)):
                     p0, p1 = cell_lines[k, 0], cell_lines[k, 1]
-                    ind0 = p0[0] * N + (p0[1] % N)
-                    ind1 = p1[0] * N + (p1[1] % N)
-                    lines = np.append(lines, [2, ind0, ind1])
-            lines = lines.astype('int')
+                    segs.append((2, p0[0] * N + (p0[1] % N), p1[0] * N + (p1[1] % N)))
 
         start = (self.top_cap_size - 1) * self.top_cap.any()
         for i in range(start, Nz - 1, Ni - 1):
@@ -168,10 +159,7 @@ class FlowDiverter:
                 cell_lines += np.array([i, j])
                 for k in range(len(cell_lines)):
                     p0, p1 = cell_lines[k, 0], cell_lines[k, 1]
-                    ind0 = p0[0] * N + (p0[1] % N)
-                    ind1 = p1[0] * N + (p1[1] % N)
-                    lines = np.append(lines, [2, ind0, ind1])
-        lines = lines.astype('int')
+                    segs.append((2, p0[0] * N + (p0[1] % N), p1[0] * N + (p1[1] % N)))
 
         if self.bot_cap.any():
             i += Ni - 1
@@ -180,10 +168,9 @@ class FlowDiverter:
                 cell_lines += np.array([i, j])
                 for k in range(len(cell_lines)):
                     p0, p1 = cell_lines[k, 0], cell_lines[k, 1]
-                    ind0 = p0[0] * N + (p0[1] % N)
-                    ind1 = p1[0] * N + (p1[1] % N)
-                    lines = np.append(lines, [2, ind0, ind1])
-            lines = lines.astype('int')
+                    segs.append((2, p0[0] * N + (p0[1] % N), p1[0] * N + (p1[1] % N)))
+
+        lines = np.asarray(segs, dtype='int').ravel()
 
         edges = pv.PolyData()
         edges.points = mesh.points
@@ -209,17 +196,21 @@ class FlowDiverter:
         Returns:
             Sorted 1-D array of neighbour indices (excludes *idx* itself).
         """
-        cids = [i for i, line in enumerate(self.lines) if idx in line]
-        connected = np.unique([self.lines[i].ravel() for i in cids])
-        return np.delete(connected, np.argwhere(connected == idx))
+        return np.array(self.connected[idx])
 
     def connected_list(self) -> list[list[int]]:
-        """Build the full adjacency list for every node.
+        """Build the full adjacency list in a single O(E) pass over the edge list.
 
         Returns:
-            List of length N where element i contains the neighbours of node i.
+            List of length N where element i contains the sorted neighbours of node i.
         """
-        return [[p for p in self.connected_nodes(i)] for i in range(len(self.mesh.points))]
+        adj: dict[int, set[int]] = {}
+        for a, b in self.lines:
+            if a != b:                         # skip degenerate self-loops
+                adj.setdefault(a, set()).add(b)
+                adj.setdefault(b, set()).add(a)
+        n = len(self.mesh.points)
+        return [sorted(adj.get(i, set())) for i in range(n)]
 
     def save(self, fname: str) -> None:
         """Write the wireframe mesh to *fname* (format inferred from file extension).
