@@ -61,25 +61,59 @@ pip install -e ".[dev]"
 
 ---
 
-## Running a simulation
+## How the code is organised
 
-```bash
-# Run the full pipeline for an experiment
-uv run stenting run --experiment experiments/experiment_0
-
-# Individual steps
-uv run stenting geometry --experiment experiments/experiment_0
-uv run stenting deploy   --experiment experiments/experiment_0
-
-# Clean generated results
-uv run stenting clean    --experiment experiments/experiment_0
-
-# Help
-uv run stenting --help
+```
+your terminal
+    │
+    ▼
+python run.py "experiment/experiment 0"           ← entry point (run.py)
+    │
+    ▼
+stenting/pipeline.py                              ← orchestrates the steps
+    ├── build_geometry()   → geometry/boundaries.py, geometry/aneurysm.py
+    ├── build_stent()      → stent/patterns.py, stent/flow_diverter.py
+    ├── deploy_stent()     → simulation.py  (FVS spring-relaxation solver)
+    └── merge_meshes()     → io.py
 ```
 
-The experiment directory must contain a `config.json`; see
-`experiments/experiment_0/config.json` for an annotated example.
+[`run.py`](run.py) at the repo root is the single entry point.
+Everything else — pipeline steps, geometry builders, the FVS solver — is
+called from there. You never need to touch the files inside `src/`.
+
+---
+
+## Running a simulation
+
+Activate the virtual environment once, then use `python run.py`:
+
+```bash
+# Activate (Linux/macOS)
+source .venv/bin/activate
+# Activate (Windows PowerShell)
+.venv\Scripts\Activate.ps1
+
+# Run the full double-stent pipeline (most common)
+python run.py "experiment/experiment 0"
+
+# Run only the outer stent (skip merge + inner)
+python run.py "experiment/experiment 0" --single-stent
+
+# Individual steps
+python run.py "experiment/experiment 0" --geometry        # Step 1: vessel mesh only
+python run.py "experiment/experiment 0" --deploy          # Steps 2-3+4+5-6: stents
+python run.py "experiment/experiment 0" --deploy --pos outer  # outer stent only
+
+# Clean generated results
+python run.py "experiment/experiment 0" --clean
+
+# Help
+python run.py --help
+```
+
+The experiment directory must contain a `config.yaml`; see
+[`experiment/experiment 0/config.yaml`](experiment/experiment%200/config.yaml)
+for the fully annotated reference.
 
 ---
 
@@ -121,15 +155,14 @@ deployStent:
 ```
 
 See [`experiment/experiment 0/config.yaml`](experiment/experiment%200/config.yaml)
-for the fully annotated reference. `config.json` and `appSettings.json` are also
-accepted for backward compatibility.
+for the fully annotated reference. `config.json` is also accepted as a fallback.
 
 ---
 
 ## Running tests
 
 ```bash
-# All tests (51 unit + 1 golden regression)
+# All tests (52 total: unit + golden regression)
 PYTHONPATH="" uv run pytest
 
 # With coverage
@@ -161,7 +194,6 @@ src/stenting/
 ├── simulation.py       # VirtualStenting.deploy (FVS algorithm)
 ├── config.py           # typed config schema + load_config()
 ├── pipeline.py         # build_geometry, deploy_stent, merge_meshes, run
-├── cli.py              # `stenting` CLI entry point
 └── io.py               # frame() GIF helper
 ```
 
