@@ -6,10 +6,10 @@ Load with :func:`load_config`::
     print(cfg.experiment_id)          # "0"
     print(cfg.constructInitFD.outer.stent.radius)  # 1.2
 
-The JSON file (``config.json``, or ``appSettings.json`` for backward compat)
-may use a ``"defaults"`` key inside ``"constructInitFD"`` and ``"deployStent"``
-to eliminate inner/outer duplication — only the fields that differ need to be
-listed in the ``"inner"``/``"outer"`` sub-objects.
+The config file (``config.yaml`` preferred; falls back to ``config.json``, then
+``appSettings.json``) may use a ``"defaults"`` key inside ``"constructInitFD"``
+and ``"deployStent"`` to eliminate inner/outer duplication — only the fields
+that differ need to be listed in the ``"inner"``/``"outer"`` sub-objects.
 """
 
 from __future__ import annotations
@@ -18,6 +18,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 __all__ = [
     "ExperimentConfig",
@@ -286,8 +288,8 @@ def _parse_deploy_stent_config(raw: dict) -> DeployStentConfig:
 def load_config(experiment_dir: str | Path) -> ExperimentConfig:
     """Load and parse an experiment config from *experiment_dir*.
 
-    Looks for ``config.json`` first, then falls back to ``appSettings.json``
-    for backward compatibility with pre-Phase-3 experiment directories.
+    Probes in order: ``config.yaml``, ``config.json``, ``appSettings.json``.
+    YAML is preferred because it supports inline comments.
 
     Args:
         experiment_dir: Path to the experiment directory.
@@ -296,20 +298,22 @@ def load_config(experiment_dir: str | Path) -> ExperimentConfig:
         Fully-parsed and validated :class:`ExperimentConfig`.
 
     Raises:
-        FileNotFoundError: If neither ``config.json`` nor ``appSettings.json``
-            is found in *experiment_dir*.
+        FileNotFoundError: If no recognised config file is found.
         KeyError: If a required config key is missing.
     """
     d = Path(experiment_dir)
-    for name in ("config.json", "appSettings.json"):
+    for name in ("config.yaml", "config.json", "appSettings.json"):
         p = d / name
         if p.exists():
             with open(p) as fh:
-                data = json.load(fh)
+                if name.endswith(".yaml"):
+                    data = yaml.safe_load(fh)
+                else:
+                    data = json.load(fh)
             break
     else:
         raise FileNotFoundError(
-            f"No config.json or appSettings.json found in '{experiment_dir}'"
+            f"No config.yaml, config.json, or appSettings.json found in '{experiment_dir}'"
         )
 
     return ExperimentConfig(

@@ -1,14 +1,9 @@
-"""Tests for rotate_layer (geometry/transforms in Phase 2)."""
+"""Tests for rotate_layer (stenting.geometry.transforms)."""
 
 import numpy as np
 import pytest
-import sys
-from pathlib import Path
 
-ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(ROOT))
-
-from PyStenting import rotate_layer
+from stenting.geometry.transforms import rotate_layer
 
 
 class TestRotateLayer:
@@ -34,16 +29,13 @@ class TestRotateLayer:
         assert result.shape == (n, 3)
 
     def test_points_lie_on_plane_perpendicular_to_tangent(self):
-        """After rotation, all points should lie roughly in the plane normal to tangent."""
-        tangent = np.array([0.0, 1.0, 0.0])  # rotate to y-axis
+        """After rotation, points lie in the plane normal to tangent."""
+        tangent = np.array([0.0, 1.0, 0.0])
         r = 1.0
         n = 8
         angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
-        # Start with a circle in z=0 plane
         verts = np.column_stack([r * np.cos(angles), r * np.sin(angles), np.zeros(n)])
-        origin = np.zeros(3)
-        result = rotate_layer(origin, tangent, verts)
-        # Dot of each point with tangent should be ~0 (they lie in the plane)
+        result = rotate_layer(np.zeros(3), tangent, verts)
         dots = result @ (tangent / np.linalg.norm(tangent))
         np.testing.assert_allclose(dots, np.zeros(n), atol=1e-10)
 
@@ -55,6 +47,6 @@ class TestRotateLayer:
         angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
         verts = np.column_stack([r * np.cos(angles), r * np.sin(angles), np.zeros(n)])
         result = rotate_layer(np.zeros(3), tangent, verts)
-        norms_before = np.linalg.norm(verts, axis=1)
-        norms_after = np.linalg.norm(result, axis=1)
-        np.testing.assert_allclose(norms_after, norms_before, atol=1e-10)
+        np.testing.assert_allclose(
+            np.linalg.norm(result, axis=1), np.linalg.norm(verts, axis=1), atol=1e-10
+        )
