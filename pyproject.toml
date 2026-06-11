@@ -19,6 +19,9 @@ dev = [
     "black>=24.0",
 ]
 
+[project.scripts]
+stenting = "stenting.cli:main"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

@@ -5,6 +5,7 @@ can replace ``import PyStenting`` and ``from Utils import *`` in one step.
 """
 
 from .centerline import VascCenterline, points2lines
+from .config import ExperimentConfig, load_config
 from .geometry import (
     aneu_geom,
     bent_tube,
@@ -41,4 +42,7 @@ __all__ = [
     "aneu_geom",
     # Animation
     "frame",
+    # Config + pipeline
+    "ExperimentConfig",
+    "load_config",
 ]

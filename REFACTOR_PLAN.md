@@ -160,21 +160,26 @@ Goal: turn flat scripts into the `src/stenting/` package in section 3.
 - [x] `pyproject.toml` updated to `where = ["src"]`; `import stenting` works.
 - [ ] **Gate:** golden test reproduces Phase 0 outputs on Linux.
 
-### Phase 3 — Config + CLI + pipeline (~2 days)
-- [ ] Define a typed config schema in `config.py` (dataclasses or `pydantic`),
-      with validation and clear error messages. Rename `appSettings.json` →
-      `config.json`. Collapse the near-identical `inner`/`outer` duplication using
-      a shared default + per-stent overrides.
-- [ ] Implement `pipeline.py` with explicit steps:
-      `build_geometry → build_stent(outer) → deploy(outer) → merge →
-      build_stent(inner) → deploy(inner)`. Single- vs double-stent selected by config.
-- [ ] Implement `cli.py` exposing one command, e.g.
-      `stenting run --experiment experiments/experiment_0` and subcommands
-      (`geometry`, `deploy`, `clean`) for partial runs. Register via
-      `[project.scripts]` in `pyproject.toml`.
-- [ ] Replace `pickle`/`.obj` case files with a portable format (save the meshes
-      as `.vtp`/`.stl` and the scalar parameters as JSON; rebuild the case object
-      from those). Removes the unsafe, version-locked pickle dependency.
+### Phase 3 — Config + CLI + pipeline (~2 days) ✅
+- [x] Defined typed config schema in `src/stenting/config.py` (dataclasses).
+      `load_config()` reads `config.json` (falls back to `appSettings.json`).
+      Added `"defaults"` deep-merge support in `constructInitFD` and `deployStent`
+      sections to eliminate inner/outer duplication — only differing fields need
+      to appear in the per-layer overrides.  New `config.json` files created for
+      both experiment directories using the defaults-merge format.
+- [x] Implemented `src/stenting/pipeline.py` with explicit step functions:
+      `build_geometry`, `build_stent(pos)`, `deploy_stent(pos)`, `merge_meshes`,
+      `run(single_stent=False)`, `clean`.  Single- vs double-stent selected by the
+      `--single-stent` flag.  All four driver scripts (`constructAneuGeom.py`,
+      `constructInitFD.py`, `deployStent.py`, `mergeMesh.py`) rewritten as
+      one-function thin wrappers calling the matching pipeline step.
+- [x] Implemented `src/stenting/cli.py` with `stenting run / geometry / deploy /
+      clean` subcommands.  Registered via `[project.scripts]` in `pyproject.toml`;
+      `uv run stenting --help` works after `uv sync`.
+- [x] Replaced `pickle`/`.obj` case files: `VirtualStenting` is no longer
+      serialised.  `deploy_stent` rebuilds the case from config + the centreline
+      `.vtk` and vessel `.stl` files already in `results/`.  The pickle import
+      has been removed from both `constructInitFD.py` and `deployStent.py`.
 - [ ] **Gate:** `stenting run` reproduces golden outputs on both OSes.
 
 ### Phase 4 — Performance & correctness (~2 days)

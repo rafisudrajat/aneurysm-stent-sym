@@ -1,94 +1,34 @@
 """Driver script — Step 1: build the aneurysm vessel geometry and centreline.
 
-Reads parameters from ``<experiment_dir>/appSettings.json`` (key
-``"constructAneuGeom"``), calls :func:`Utils.aneu_geom`, and saves the outputs
-to ``<experiment_dir>/results/``.
+Delegates to :func:`stenting.pipeline.build_geometry`.
 
-Outputs written:
+Outputs written to ``<experiment_dir>/results/``:
   ``vessel_EX<id>.stl``       — vessel surface mesh
-  ``centerline_EX<id>.vtk``   — stent deployment centreline (must be .vtk for PyVista)
+  ``centerline_EX<id>.vtk``   — stent deployment centreline
   ``inlet_EX<id>.stl``        — inlet cap (only if ``get_inlet_outlet`` is True)
   ``outlet_EX<id>.stl``       — outlet cap (only if ``get_inlet_outlet`` is True)
 
-The experiment ID is read from the ``"experiment_id"`` key in ``appSettings.json``.
+Configuration is loaded from ``config.json`` in the experiment directory
+(falls back to ``appSettings.json`` for backward compatibility).
 """
 
+from __future__ import annotations
+
 import argparse
-import json
-import time
 from pathlib import Path
 
-import numpy as np
-import pyvista as pv
-
-from stenting import aneu_geom
-
-
-def _parse_config(dir_path: str) -> tuple[str, dict, dict | bool]:
-    """Load ``constructAneuGeom`` parameters from ``appSettings.json``.
-
-    Args:
-        dir_path: Path to the experiment directory containing ``appSettings.json``.
-
-    Returns:
-        ``(experiment_id, aneu_geom_param, filter_param)`` where *filter_param*
-        is either a dict with ``nsub`` / ``kind`` keys or ``False`` if no filter
-        is configured.
-    """
-    with open(Path(dir_path) / 'appSettings.json', 'r') as setting:
-        data = json.load(setting)
-        experiment_id = data["experiment_id"]
-        cfg = data["constructAneuGeom"]
-        aneu_geom_param = cfg["aneu_geom_param"]
-        filter_param = cfg.get("filter", False)
-        return experiment_id, aneu_geom_param, filter_param
+from stenting.config import load_config
+from stenting.pipeline import build_geometry
 
 
 def main(dir_path: str) -> None:
-    """Build the aneurysm geometry and write mesh files to the results directory.
+    """Build the aneurysm geometry and write mesh files.
 
     Args:
-        dir_path: Path to the experiment directory.  Must contain
-            ``appSettings.json``; a ``results/`` sub-directory is created if it
-            does not already exist.
+        dir_path: Path to the experiment directory.
     """
-    t0 = time.time()
-    experiment_id, aneu_param, filter_param = _parse_config(dir_path)
-    results_dir = Path(dir_path) / "results"
-    results_dir.mkdir(parents=True, exist_ok=True)
-
-    dict_aneu_geom = aneu_geom(
-        r=aneu_param['r'],
-        h=aneu_param['h'],
-        hstent=aneu_param['hstent'],
-        overlap=aneu_param['overlap'],
-        aneu_rad=aneu_param['aneu_rad'],
-        cyl_res=aneu_param['cyl_res'],
-        sph_res=aneu_param['sph_res'],
-        angle=np.radians(aneu_param['angle']),
-        extension_ratio=aneu_param['extension_ratio'],
-        ext_res=aneu_param['ext_res'],
-        get_inlet_outlet=aneu_param.get("get_inlet_outlet", False),
-    )
-    aneu = dict_aneu_geom["geom"]
-    centerline_points = dict_aneu_geom["stent_centerline"]
-    inlet_surface = dict_aneu_geom.get("inlet", None)
-    outlet_surface = dict_aneu_geom.get("outlet", None)
-
-    if inlet_surface is not None and outlet_surface is not None:
-        inlet_surface.save(str(results_dir / f"inlet_EX{experiment_id}.stl"))
-        outlet_surface.save(str(results_dir / f"outlet_EX{experiment_id}.stl"))
-
-    centerline_wrap = pv.wrap(centerline_points)
-    centerline_wrap.save(str(results_dir / f"centerline_EX{experiment_id}.vtk"))
-
-    bound = aneu
-    if filter_param:
-        bound = aneu.subdivide(filter_param['nsub'], subfilter=filter_param['kind'])
-    bound.save(str(results_dir / f"vessel_EX{experiment_id}.stl"))
-
-    tend = time.time()
-    print("Finished to construct aneurism geometry with time= %.2f ms" % (tend - t0))
+    cfg = load_config(dir_path)
+    build_geometry(cfg, Path(dir_path) / "results")
 
 
 if __name__ == "__main__":
@@ -99,7 +39,7 @@ if __name__ == "__main__":
         '--experiment_dir',
         type=str,
         default='./',
-        help='Path to the experiment directory containing appSettings.json',
+        help='Path to the experiment directory containing config.json',
     )
     args = parser.parse_args()
     main(args.experiment_dir)
