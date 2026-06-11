@@ -19,14 +19,12 @@ dev = [
     "black>=24.0",
 ]
 
-# NOTE: flat-script layout for now; Phase 2 migrates to src/stenting/
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = []  # no installable package yet; Phase 2 moves to src/stenting/
+where = ["src"]
 
 # ---------------------------------------------------------------------------
 # Ruff — linter + import sorter
@@ -40,9 +38,6 @@ target-version = "py310"
 select = ["E", "F", "W", "I"]
 ignore = [
     "E501",   # line too long — black handles formatting
-    "F401",   # unused imports — too many in current code, fix in Phase 2
-    "F403",   # star imports — fix in Phase 2
-    "F405",   # may be from star import — fix in Phase 2
 ]
 
 # ---------------------------------------------------------------------------

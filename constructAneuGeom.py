@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import pyvista as pv
 
-from Utils import *
+from stenting import aneu_geom
 
 
 def _parse_config(dir_path: str) -> tuple[str, dict, dict | bool]:
