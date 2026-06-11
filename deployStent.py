@@ -6,12 +6,10 @@ optionally calls :meth:`~PyStenting.FlowDiverter.render_strut` to produce a
 solid mesh.
 
 Outputs written to ``<experiment_dir>/results/``:
-  ``deployed_<pos>_stentEX<N>.stl``          — rendered solid stent (if render_param set)
-  ``deployed_<pos>_stentEX<N>_norender.vtp`` — wireframe stent (if render_param empty)
+  ``deployed_<pos>_stentEX<id>.stl``          — rendered solid stent (if render_param set)
+  ``deployed_<pos>_stentEX<id>_norender.vtp`` — wireframe stent (if render_param empty)
 
-NOTE: experiment number is currently derived from the Windows-style path string
-``dir_path.split('\\')[1].split()[1]``.  This breaks on Linux.
-Fix is tracked in REFACTOR_PLAN.md Phase 1.
+The experiment ID is read from the ``"experiment_id"`` key in ``appSettings.json``.
 """
 
 from __future__ import annotations
@@ -20,12 +18,13 @@ import argparse
 import json
 import pickle
 import time
+from pathlib import Path
 
 import PyStenting as ps
 from Utils import *
 
 
-def _parse_config(dir_path: str, pos: str) -> tuple[str, dict, dict, dict | bool]:
+def _parse_config(dir_path: str, pos: str) -> tuple[str, str, dict, dict, dict | bool]:
     """Load ``deployStent`` parameters for stent position *pos*.
 
     Args:
@@ -33,20 +32,22 @@ def _parse_config(dir_path: str, pos: str) -> tuple[str, dict, dict, dict | bool
         pos: Stent position — must be ``"inner"`` or ``"outer"``.
 
     Returns:
-        ``(kind_FD, deploy_param, render_param, filter_param)``
+        ``(experiment_id, kind_FD, deploy_param, render_param, filter_param)``
 
     Raises:
         ValueError: If *pos* is not ``"inner"`` or ``"outer"``.
     """
-    with open(dir_path + '/appSettings.json', 'r') as setting:
+    with open(Path(dir_path) / 'appSettings.json', 'r') as setting:
         if pos not in ("inner", "outer"):
             raise ValueError("stent position value must be either 'inner' or 'outer'")
+        data = json.load(setting)
+        experiment_id = data["experiment_id"]
         kind_FD = pos
-        data = json.load(setting)["deployStent"][kind_FD]
-        deploy_param = data["deploy_param"]
-        render_param = data["render_param"]
-        filter_param = data.get("filter", False)
-        return kind_FD, deploy_param, render_param, filter_param
+        cfg = data["deployStent"][kind_FD]
+        deploy_param = cfg["deploy_param"]
+        render_param = cfg["render_param"]
+        filter_param = cfg.get("filter", False)
+        return experiment_id, kind_FD, deploy_param, render_param, filter_param
 
 
 def loadFDCaseFile(filename: str) -> ps.VirtualStenting:
@@ -74,15 +75,14 @@ def main(dir_path: str, stent_pos: str) -> None:
         dir_path: Experiment directory path.
         stent_pos: ``"inner"`` or ``"outer"``.
     """
-    kind_FD, deploy_param, render_param, filter_param = _parse_config(dir_path, stent_pos)
-    t1 = time.time()
-
-    # TODO (Phase 1): replace Windows-only path parsing with pathlib.Path(dir_path).name
-    experiment_number = dir_path.split('\\')[1].split()[1]
-
-    case = loadFDCaseFile(
-        '{}/results/init_{}_stentEX{}.obj'.format(dir_path, kind_FD, experiment_number)
+    experiment_id, kind_FD, deploy_param, render_param, filter_param = (
+        _parse_config(dir_path, stent_pos)
     )
+    results_dir = Path(dir_path) / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    t1 = time.time()
+    case = loadFDCaseFile(str(results_dir / f"init_{kind_FD}_stentEX{experiment_id}.obj"))
     result = case.deploy(
         tol=deploy_param["tol"],
         add_tol=deploy_param["add_tol"],
@@ -107,13 +107,11 @@ def main(dir_path: str, stent_pos: str) -> None:
         )
         if filter_param:
             result.subdivide(filter_param['nsub'], subfilter=filter_param['kind'])
-        result.save("{}/results/deployed_{}_stentEX{}.stl".format(
-            dir_path, kind_FD, experiment_number))
+        result.save(str(results_dir / f"deployed_{kind_FD}_stentEX{experiment_id}.stl"))
         t3 = time.time()
         print('Rendering done, dt_render=%.2f s' % (t3 - t2))
     else:
-        result.save("{}/results/deployed_{}_stentEX{}_norender.vtp".format(
-            dir_path, kind_FD, experiment_number))
+        result.save(str(results_dir / f"deployed_{kind_FD}_stentEX{experiment_id}_norender.vtp"))
 
 
 if __name__ == "__main__":
