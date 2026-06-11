@@ -1,74 +1,184 @@
 <a name="readme-top"></a>
-[![LinkedIn][linkedin-shield]][linkedin-url]
+[![CI](https://github.com/rafisudrajat/aneurysm-stent-sym/actions/workflows/ci.yml/badge.svg)](https://github.com/rafisudrajat/aneurysm-stent-sym/actions/workflows/ci.yml)
+[![LinkedIn](https://img.shields.io/badge/-LinkedIn-black.svg?style=for-the-badge&logo=linkedin&colorB=555)](https://www.linkedin.com/in/muhammad-rafi-sudrajat/)
 
-<!-- PROJECT LOGO -->
 <br />
 <div align="center">
   <a href="https://medik.tf.itb.ac.id/profil/">
     <img src="images/lab-logo.png" alt="Logo" width="80" height="80">
   </a>
-
-  <h3 align="center">Double Stent Deployment Simulation for Aneurysm Therapy</h3>
-
+  <h3 align="center">Double-Stent Virtual Stenting Simulation</h3>
   <p align="center">
-    Deployment simulation of double stent using Fast Virtual Stenting Algorithm.
+    Fast Virtual Stenting (FVS) deployment simulation for single and double flow-diverter stent therapy of intracranial aneurysms.
     <br />
-    <br />
-    <a href="https://github.com/othneildrew/Best-README-Template/issues">Report Bug</a>
+    <a href="https://ieeexplore.ieee.org/document/9624474">Published paper</a>
     ·
-    <a href="https://github.com/othneildrew/Best-README-Template/issues">Request Feature</a>
+    <a href="https://github.com/rafisudrajat/aneurysm-stent-sym/issues">Report Bug</a>
+    ·
+    <a href="https://github.com/rafisudrajat/aneurysm-stent-sym/issues">Request Feature</a>
   </p>
 </div>
 
+---
 
-<!-- ABOUT THE PROJECT -->
-## About The Project
+## About
 
-This project was initialized by <a href="https://sites.google.com/view/narendkurnia/home?authuser=0">Narendra Kurnia Putra Ph.D.</a> and <a href="https://www.linkedin.com/in/bonfilio-nainggolan-12508415a/">Bonfilio Nainggolan</a> as Bonfilio's undergraduate thesis project in 2021. Back then, the purpose of this project was to analyse the effect of flow diverter stent therapy using single stent layer and the result was published on <a href="https://ieeexplore.ieee.org/document/9624474">here</a>.
+This project was initiated by [Narendra Kurnia Putra Ph.D.](https://sites.google.com/view/narendkurnia/home) and [Bonfilio Nainggolan](https://www.linkedin.com/in/bonfilio-nainggolan-12508415a/) for Bonfilio's undergraduate thesis (2021). The original work analysed single-stent flow-diverter therapy; the codebase is now being extended to double-stent CFD analysis.
 
-For further improvement, this project is extended to analyze the effect of double stent therapy using CFD.
+The simulation uses the **Fast Virtual Stenting (FVS)** spring-relaxation algorithm: each stent node is attracted toward its fully-expanded target position by linear springs, while a KDTree proximity check prevents wall penetration.
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+---
 
-<!-- GETTING STARTED -->
-## Getting Started
+## Getting started
 
-<br/>
+### Prerequisites
 
-### Installation
-To get a local copy up and running follow these simple example steps.
+- Python 3.10 or 3.11
+- [uv](https://docs.astral.sh/uv/) (recommended) **or** pip + venv
 
+### Install with uv (recommended)
 
-1. Install <a href="https://www.anaconda.com/">Anaconda</a> 
-2. Clone the repo
-   ```cmd
-   git clone https://github.com/rafisudrajat/aneurysm-stent-sym.git
-   ```
-3. Create conda virtual environment and activate it
-   ```cmd
-   conda create -n [env-name] python=3.9
-   conda activate [env-name]
-   ```
-4. Install python package in `requirements.txt`
-   ```cmd
-   pip install -r requirements.txt
-   ```
+```bash
+git clone https://github.com/rafisudrajat/aneurysm-stent-sym.git
+cd aneurysm-stent-sym
+uv sync                 # creates .venv and installs all dependencies
+uv sync --extra dev     # also installs pytest, ruff, black
+```
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+### Install with pip
 
-### How to run
+```bash
+git clone https://github.com/rafisudrajat/aneurysm-stent-sym.git
+cd aneurysm-stent-sym
+python -m venv .venv
+# Linux/macOS:
+source .venv/bin/activate
+# Windows (PowerShell):
+.venv\Scripts\Activate.ps1
 
-1. Open the `runSym.cmd` and select the simulation directory by changing the dir param variable
-  ```cmd
-   set "dir_param=experiment\[experiment_dir]"
-  ```
-1. Set the simulation setting by changing the appSettings.json file inside the [experiment_dir]
-2. Run the simulation using `runSym.cmd`
-  ```cmd
-   runSym.cmd
-  ```
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+pip install -e ".[dev]"
+```
 
+---
 
-[linkedin-shield]: https://img.shields.io/badge/-LinkedIn-black.svg?style=for-the-badge&logo=linkedin&colorB=555
-[linkedin-url]: https://www.linkedin.com/in/muhammad-rafi-sudrajat/
+## Running a simulation
+
+```bash
+# Run the full pipeline for an experiment
+uv run stenting run --experiment experiments/experiment_0
+
+# Individual steps
+uv run stenting geometry --experiment experiments/experiment_0
+uv run stenting deploy   --experiment experiments/experiment_0
+
+# Clean generated results
+uv run stenting clean    --experiment experiments/experiment_0
+
+# Help
+uv run stenting --help
+```
+
+The experiment directory must contain a `config.json`; see
+`experiments/experiment_0/config.json` for an annotated example.
+
+---
+
+## Configuration
+
+Each experiment lives in its own directory and is driven by `config.yaml`
+(YAML is preferred over JSON because it supports inline comments):
+
+```yaml
+experiment_id: "0"
+
+constructAneuGeom:
+  aneu_geom_param:
+    r: 1.5        # vessel radius (mm)
+    h: 30         # vessel height (mm)
+    hstent: 15    # stent landing zone height (mm)
+    # ... other geometry params
+
+# Fields in "defaults" are merged into both "inner" and "outer".
+# Only the fields that differ between layers need to appear per-layer.
+constructInitFD:
+  defaults:
+    stent:
+      radius: 1.2   # crimped radius; expanded by FVS solver
+      tcopy: 21
+      hcopy: 28
+  outer:
+    stent: {offset_angle: 0}
+  inner:
+    stent: {offset_angle: 0.5}   # rotate inner stent to interleave struts
+
+deployStent:
+  defaults:
+    deploy_param: {tol: 5.0e-5, max_iter: 700, OC: true}
+  outer:
+    deploy_param: {add_tol: 3.0e-3}
+  inner:
+    deploy_param: {add_tol: 5.5e-3}
+```
+
+See [`experiment/experiment 0/config.yaml`](experiment/experiment%200/config.yaml)
+for the fully annotated reference. `config.json` and `appSettings.json` are also
+accepted for backward compatibility.
+
+---
+
+## Running tests
+
+```bash
+# All tests (51 unit + 1 golden regression)
+PYTHONPATH="" uv run pytest
+
+# With coverage
+PYTHONPATH="" uv run pytest --cov=src/stenting
+
+# Lint
+uv run ruff check src/ tests/
+```
+
+> **Note:** `PYTHONPATH=""` clears any injected paths (e.g. from ROS) that can
+> load broken pytest plugins.  Make it an alias: `alias pt='PYTHONPATH="" uv run pytest'`
+
+---
+
+## Project structure
+
+```
+src/stenting/
+├── geometry/
+│   ├── transforms.py   # rotate_layer
+│   ├── cylinder.py     # shared ring/face builders
+│   ├── boundaries.py   # cylinder, conical, bent_tube, s_curve, rugged_cylinder
+│   └── aneurysm.py     # aneu_geom (vessel + sac)
+├── stent/
+│   ├── patterns.py     # helical, enterprise, honeycomb, semienterprise
+│   ├── flow_diverter.py# FlowDiverter (wireframe mesh + adjacency)
+│   └── render.py       # render_strut (strut inflation)
+├── centerline.py       # VascCenterline
+├── simulation.py       # VirtualStenting.deploy (FVS algorithm)
+├── config.py           # typed config schema + load_config()
+├── pipeline.py         # build_geometry, deploy_stent, merge_meshes, run
+├── cli.py              # `stenting` CLI entry point
+└── io.py               # frame() GIF helper
+```
+
+---
+
+## CI
+
+GitHub Actions runs `lint + test` on every push and pull request, across:
+
+| OS | Python |
+|---|---|
+| ubuntu-latest | 3.10, 3.11 |
+| windows-latest | 3.10, 3.11 |
+
+---
+
+## References
+
+- B. Nainggolan et al., *"Flow Diverter Stent Simulation on Patient-Specific Intracranial Aneurysm"*, ICITEE 2021. [IEEE link](https://ieeexplore.ieee.org/document/9624474)
+- M. Appanaboyina et al., *"Computational modelling of blood flow in side arterial branches after stenting"*, Int. J. Comput. Fluid Dyn., 2008.

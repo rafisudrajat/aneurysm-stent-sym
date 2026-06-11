@@ -1,0 +1,64 @@
+experiment_id: "1"
+
+# ── Vessel geometry ──────────────────────────────────────────────────────────
+constructAneuGeom:
+  aneu_geom_param:
+    r: 1.5          # vessel radius (mm)
+    h: 30           # vessel height (mm)
+    hstent: 15      # stent landing zone height (mm)
+    overlap: 0.8    # aneurysm neck overlap fraction
+    aneu_rad: 3     # aneurysm sac radius (mm)
+    cyl_res: 50     # circumferential mesh resolution
+    sph_res: 30     # spherical sac mesh resolution
+    angle: 0        # sac tilt angle (degrees)
+    extension_ratio: 0
+    ext_res: 5
+
+# ── Stent construction ───────────────────────────────────────────────────────
+# Fields in "defaults" are merged into both "inner" and "outer".
+# Only fields that differ between layers need to appear in the per-layer block.
+constructInitFD:
+  defaults:
+    pattern:
+      name: helical
+      parameter:
+        size: 2
+    stent:
+      radius: 1.2       # crimped radius (mm); expanded by FVS solver
+      height: 15        # stent length (mm)
+      tcopy: 21         # circumferential repeats
+      hcopy: 28         # axial repeats
+      strut_radius: 0.025  # wire cross-section radius (mm)
+    deploy_position_param:
+      range: [70, 365]  # centreline arc-length range (mm) for initial placement
+      point_spacing: 1
+      reverse: false
+  outer:
+    stent:
+      offset_angle: 0      # outer stent not rotated
+  inner:
+    stent:
+      offset_angle: 0.25   # rotate inner stent by 0.25 rad to interleave struts
+
+# ── Deployment solver ────────────────────────────────────────────────────────
+deployStent:
+  defaults:
+    deploy_param:
+      tol: 5.0e-5     # convergence tolerance (max nodal displacement per iter)
+      step: null      # fixed iteration step override (null = adaptive)
+      fstop: 1        # fraction of centreline to deploy before stopping
+      max_iter: 700
+      alpha: 1        # spring stiffness multiplier
+      verbose: true
+      OC: true        # outward-correction: push nodes away from wall
+      render_gif: false
+    render_param:
+      n: 5            # strut cross-section polygon sides
+      h: 1.2          # strut inflation factor
+      threshold: 2    # max strut length before skipping inflation
+  outer:
+    deploy_param:
+      add_tol: 7.0e-2   # extra tolerance for outer layer
+  inner:
+    deploy_param:
+      add_tol: 9.5e-2   # extra tolerance for inner layer
