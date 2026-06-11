@@ -1,21 +1,34 @@
 """Driver script — Step 4: merge the deployed outer stent into the vessel mesh.
 
-Combines ``vessel_EX<N>.stl`` and ``deployed_outer_stentEX<N>.stl`` into a
+Combines ``vessel_EX<id>.stl`` and ``deployed_outer_stentEX<id>.stl`` into a
 single mesh used as the modified vessel wall for inner-stent deployment.
 
 Output written to ``<experiment_dir>/results/``:
-  ``stented1x_vessel_EX<N>.stl`` — merged vessel + outer stent surface
+  ``stented1x_vessel_EX<id>.stl`` — merged vessel + outer stent surface
 
-NOTE: experiment number is currently derived from the Windows-style path string
-``dir_path.split('\\')[1].split()[1]``.  This breaks on Linux.
-Fix is tracked in REFACTOR_PLAN.md Phase 1.
+The experiment ID is read from the ``"experiment_id"`` key in ``appSettings.json``.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
 
 import trimesh
+
+
+def _parse_config(dir_path: str) -> str:
+    """Read the experiment ID from ``appSettings.json``.
+
+    Args:
+        dir_path: Experiment directory path.
+
+    Returns:
+        The ``experiment_id`` string from the config.
+    """
+    with open(Path(dir_path) / 'appSettings.json', 'r') as setting:
+        return json.load(setting)["experiment_id"]
 
 
 def main(dir_path: str) -> None:
@@ -25,17 +38,16 @@ def main(dir_path: str) -> None:
         dir_path: Experiment directory path.  Must contain a ``results/``
             sub-directory with the vessel and stent STL files.
     """
-    # TODO (Phase 1): replace Windows-only path parsing with pathlib.Path(dir_path).name
-    experiment_number = dir_path.split('\\')[1].split()[1]
+    experiment_id = _parse_config(dir_path)
+    results_dir = Path(dir_path) / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
 
-    vessel = trimesh.load("{}/results/vessel_EX{}.stl".format(dir_path, experiment_number))
+    vessel = trimesh.load(str(results_dir / f"vessel_EX{experiment_id}.stl"))
     deployed_stent = trimesh.load(
-        "{}/results/deployed_outer_stentEX{}.stl".format(dir_path, experiment_number)
+        str(results_dir / f"deployed_outer_stentEX{experiment_id}.stl")
     )
     combined = trimesh.util.concatenate([vessel, deployed_stent])
-    combined.export(
-        file_obj="{}/results/stented1x_vessel_EX{}.stl".format(dir_path, experiment_number)
-    )
+    combined.export(file_obj=str(results_dir / f"stented1x_vessel_EX{experiment_id}.stl"))
 
 
 if __name__ == "__main__":

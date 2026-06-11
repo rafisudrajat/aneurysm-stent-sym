@@ -5,19 +5,18 @@ Reads parameters from ``<experiment_dir>/appSettings.json`` (key
 to ``<experiment_dir>/results/``.
 
 Outputs written:
-  ``vessel_EX<N>.stl``       — vessel surface mesh
-  ``centerline_EX<N>.vtk``   — stent deployment centreline (must be .vtk for PyVista)
-  ``inlet_EX<N>.stl``        — inlet cap (only if ``get_inlet_outlet`` is True)
-  ``outlet_EX<N>.stl``       — outlet cap (only if ``get_inlet_outlet`` is True)
+  ``vessel_EX<id>.stl``       — vessel surface mesh
+  ``centerline_EX<id>.vtk``   — stent deployment centreline (must be .vtk for PyVista)
+  ``inlet_EX<id>.stl``        — inlet cap (only if ``get_inlet_outlet`` is True)
+  ``outlet_EX<id>.stl``       — outlet cap (only if ``get_inlet_outlet`` is True)
 
-NOTE: experiment number is currently derived from the Windows-style path string
-``dir_path.split('\\')[1].split()[1]``.  This breaks on Linux.
-Fix is tracked in REFACTOR_PLAN.md Phase 1.
+The experiment ID is read from the ``"experiment_id"`` key in ``appSettings.json``.
 """
 
 import argparse
 import json
 import time
+from pathlib import Path
 
 import numpy as np
 import pyvista as pv
@@ -25,21 +24,24 @@ import pyvista as pv
 from Utils import *
 
 
-def _parse_config(dir_path: str) -> tuple[dict, dict | bool]:
+def _parse_config(dir_path: str) -> tuple[str, dict, dict | bool]:
     """Load ``constructAneuGeom`` parameters from ``appSettings.json``.
 
     Args:
         dir_path: Path to the experiment directory containing ``appSettings.json``.
 
     Returns:
-        ``(aneu_geom_param, filter_param)`` where *filter_param* is either a dict
-        with ``nsub`` / ``kind`` keys or ``False`` if no filter is configured.
+        ``(experiment_id, aneu_geom_param, filter_param)`` where *filter_param*
+        is either a dict with ``nsub`` / ``kind`` keys or ``False`` if no filter
+        is configured.
     """
-    with open(dir_path + '/appSettings.json', 'r') as setting:
-        data = json.load(setting)["constructAneuGeom"]
-        aneu_geom_param = data["aneu_geom_param"]
-        filter_param = data.get("filter", False)
-        return aneu_geom_param, filter_param
+    with open(Path(dir_path) / 'appSettings.json', 'r') as setting:
+        data = json.load(setting)
+        experiment_id = data["experiment_id"]
+        cfg = data["constructAneuGeom"]
+        aneu_geom_param = cfg["aneu_geom_param"]
+        filter_param = cfg.get("filter", False)
+        return experiment_id, aneu_geom_param, filter_param
 
 
 def main(dir_path: str) -> None:
@@ -47,10 +49,14 @@ def main(dir_path: str) -> None:
 
     Args:
         dir_path: Path to the experiment directory.  Must contain
-            ``appSettings.json`` and a writable ``results/`` sub-directory.
+            ``appSettings.json``; a ``results/`` sub-directory is created if it
+            does not already exist.
     """
     t0 = time.time()
-    aneu_param, filter_param = _parse_config(dir_path)
+    experiment_id, aneu_param, filter_param = _parse_config(dir_path)
+    results_dir = Path(dir_path) / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+
     dict_aneu_geom = aneu_geom(
         r=aneu_param['r'],
         h=aneu_param['h'],
@@ -69,20 +75,17 @@ def main(dir_path: str) -> None:
     inlet_surface = dict_aneu_geom.get("inlet", None)
     outlet_surface = dict_aneu_geom.get("outlet", None)
 
-    # TODO (Phase 1): replace Windows-only path parsing with pathlib.Path(dir_path).name
-    experiment_number = dir_path.split('\\')[1].split()[1]
-
     if inlet_surface is not None and outlet_surface is not None:
-        inlet_surface.save("{}/results/inlet_EX{}.stl".format(dir_path, experiment_number))
-        outlet_surface.save("{}/results/outlet_EX{}.stl".format(dir_path, experiment_number))
+        inlet_surface.save(str(results_dir / f"inlet_EX{experiment_id}.stl"))
+        outlet_surface.save(str(results_dir / f"outlet_EX{experiment_id}.stl"))
 
     centerline_wrap = pv.wrap(centerline_points)
-    centerline_wrap.save("{}/results/centerline_EX{}.vtk".format(dir_path, experiment_number))
+    centerline_wrap.save(str(results_dir / f"centerline_EX{experiment_id}.vtk"))
 
     bound = aneu
     if filter_param:
         bound = aneu.subdivide(filter_param['nsub'], subfilter=filter_param['kind'])
-    bound.save("{}/results/vessel_EX{}.stl".format(dir_path, experiment_number))
+    bound.save(str(results_dir / f"vessel_EX{experiment_id}.stl"))
 
     tend = time.time()
     print("Finished to construct aneurism geometry with time= %.2f ms" % (tend - t0))

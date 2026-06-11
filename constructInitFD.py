@@ -4,12 +4,10 @@ Reads parameters from ``<experiment_dir>/appSettings.json`` (key
 ``"constructInitFD"`` → ``"inner"`` or ``"outer"``), constructs the stent
 wireframe and crimped :class:`VirtualStenting` case, then saves:
 
-  ``results/init_<pos>_stentEX<N>.vtp``  — initial stent wireframe mesh
-  ``results/init_<pos>_stentEX<N>.obj``  — pickled :class:`VirtualStenting` case
+  ``results/init_<pos>_stentEX<id>.vtp``  — initial stent wireframe mesh
+  ``results/init_<pos>_stentEX<id>.obj``  — pickled :class:`VirtualStenting` case
 
-NOTE: experiment number is currently derived from the Windows-style path string
-``dir_path.split('\\')[1].split()[1]``.  This breaks on Linux.
-Fix is tracked in REFACTOR_PLAN.md Phase 1.
+The experiment ID is read from the ``"experiment_id"`` key in ``appSettings.json``.
 
 NOTE: :func:`selectPattern` returns the ``semienterprise`` *function object*
 instead of calling it (missing parentheses).  Bug preserved intentionally;
@@ -22,6 +20,7 @@ import argparse
 import json
 import pickle
 import time
+from pathlib import Path
 
 import numpy as np
 import pyvista as pv
@@ -29,7 +28,7 @@ import PyStenting as ps
 from Utils import *
 
 
-def _parse_config(dir_path: str, pos: str) -> tuple[str, dict, dict, dict, dict | bool]:
+def _parse_config(dir_path: str, pos: str) -> tuple[str, str, dict, dict, dict, dict | bool]:
     """Load ``constructInitFD`` parameters for stent position *pos*.
 
     Args:
@@ -37,21 +36,23 @@ def _parse_config(dir_path: str, pos: str) -> tuple[str, dict, dict, dict, dict 
         pos: Stent position — must be ``"inner"`` or ``"outer"``.
 
     Returns:
-        ``(kind_FD, pattern_param, stent_param, deploy_pos_param, filter_param)``
+        ``(experiment_id, kind_FD, pattern_param, stent_param, deploy_pos_param, filter_param)``
 
     Raises:
         ValueError: If *pos* is not ``"inner"`` or ``"outer"``.
     """
-    with open(dir_path + '/appSettings.json', 'r') as setting:
+    with open(Path(dir_path) / 'appSettings.json', 'r') as setting:
         if pos not in ("inner", "outer"):
             raise ValueError("stent position value must be either 'inner' or 'outer'")
+        data = json.load(setting)
+        experiment_id = data["experiment_id"]
         kind_FD = pos
-        data = json.load(setting)["constructInitFD"][kind_FD]
-        pattern = data["pattern"]
-        stent = data["stent"]
-        deploy_pos_param = data["deploy_position_param"]
-        filter_param = data.get("filter", False)
-        return kind_FD, pattern, stent, deploy_pos_param, filter_param
+        cfg = data["constructInitFD"][kind_FD]
+        pattern = cfg["pattern"]
+        stent = cfg["stent"]
+        deploy_pos_param = cfg["deploy_position_param"]
+        filter_param = cfg.get("filter", False)
+        return experiment_id, kind_FD, pattern, stent, deploy_pos_param, filter_param
 
 
 def selectPattern(name: str, param: dict = {}) -> ps.Pattern:
@@ -110,9 +111,12 @@ def main(dir_path: str, stent_pos: str) -> None:
         stent_pos: ``"inner"`` or ``"outer"``.
     """
     t0 = time.time()
-    kind_FD, pattern_param, stent_param, deploy_pos_param, filter_param = _parse_config(
-        dir_path, stent_pos
+    experiment_id, kind_FD, pattern_param, stent_param, deploy_pos_param, filter_param = (
+        _parse_config(dir_path, stent_pos)
     )
+    results_dir = Path(dir_path) / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+
     pattern = selectPattern(pattern_param["name"], pattern_param.get("parameter", {}))
     stent = ps.FlowDiverter(
         pattern,
@@ -124,16 +128,13 @@ def main(dir_path: str, stent_pos: str) -> None:
         offset_angle=stent_param.get("offset_angle", 0),
     )
 
-    # TODO (Phase 1): replace Windows-only path parsing with pathlib.Path(dir_path).name
-    experiment_number = dir_path.split('\\')[1].split()[1]
-
-    centerline_load = pv.read("{}/results/centerline_EX{}.vtk".format(dir_path, experiment_number))
+    centerline_load = pv.read(str(results_dir / f"centerline_EX{experiment_id}.vtk"))
     path_to_bound = (
-        "{}/results/vessel_EX{}.stl".format(dir_path, experiment_number)
+        results_dir / f"vessel_EX{experiment_id}.stl"
         if kind_FD == "outer"
-        else "{}/results/stented1x_vessel_EX{}.stl".format(dir_path, experiment_number)
+        else results_dir / f"stented1x_vessel_EX{experiment_id}.stl"
     )
-    bound = pv.read(path_to_bound)
+    bound = pv.read(str(path_to_bound))
     if filter_param:
         bound.subdivide(filter_param['nsub'], subfilter=filter_param['kind'])
 
@@ -145,9 +146,9 @@ def main(dir_path: str, stent_pos: str) -> None:
     )
     case = ps.VirtualStenting(stent=stent, centerline=centerline, boundary=bound)
 
-    filename = '{}/results/init_{}_stentEX{}'.format(dir_path, kind_FD, experiment_number)
-    case.initial_stent.save("{}.vtp".format(filename))
-    saveFDCase('{}.obj'.format(filename), case)
+    stem = results_dir / f"init_{kind_FD}_stentEX{experiment_id}"
+    case.initial_stent.save(str(stem) + ".vtp")
+    saveFDCase(str(stem) + ".obj", case)
 
     tend = time.time()
     print("Finished to construct initial stent with time= %.2f ms" % (tend - t0))
