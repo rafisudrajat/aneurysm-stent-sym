@@ -276,7 +276,7 @@ def run(experiment_dir: str | Path, single_stent: bool = False) -> None:
 
     Args:
         experiment_dir: Path to the experiment directory (must contain
-            ``config.json`` or ``appSettings.json``).
+            ``config.yaml`` or ``config.json``).
         single_stent: Stop after step 3, skipping merge and inner-stent steps.
     """
     cfg = load_config(experiment_dir)
