@@ -1,7 +1,6 @@
 """Tests for stent pattern constructors and FlowDiverter mesh building."""
 
 import numpy as np
-import pytest
 
 import stenting as s
 

@@ -1,6 +1,5 @@
 """Shared fixtures for the test suite."""
 
-import numpy as np
 import pytest
 
 
