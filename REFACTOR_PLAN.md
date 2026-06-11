@@ -182,14 +182,28 @@ Goal: turn flat scripts into the `src/stenting/` package in section 3.
       has been removed from both `constructInitFD.py` and `deployStent.py`.
 - [ ] **Gate:** `stenting run` reproduces golden outputs on both OSes.
 
-### Phase 4 — Performance & correctness (~2 days)
-- [ ] Rewrite adjacency build as a single pass over `lines` (dict of sets).
-- [ ] Move the array copies out of the inner node loop in `deploy`; vectorize the
-      spring-force update over nodes where possible (operate on arrays, not Python
-      loops over `connected[i]`).
-- [ ] Replace `np.append`-in-loop with preallocation / `np.concatenate`.
-- [ ] Add a fast contact-distance path (the `KDTree.query` per node per iteration
-      is a hotspot — batch the queries).
+### Phase 4 — Performance & correctness (~2 days) ✅
+- [x] Rewrote `connected_list` in `stent/flow_diverter.py` as a single O(E) pass
+      over `self.lines` using a dict-of-sets (was O(N²) — scanned all edges for
+      every node).  `connected_nodes` now delegates to the cached `self.connected`
+      list instead of re-scanning.
+- [x] Replaced the Python per-node inner loop in `VirtualStenting.deploy` with a
+      vectorized Jacobi update: spring force computed as a sparse matrix-vector
+      product `(K @ p) - kt*p - C` where K (scipy CSR) is precomputed once from
+      `self.stent.lines` at deploy time.  Removed `p.copy()` calls that were
+      inside the per-node loop (O(N²) → O(1) copies per outer iteration).
+      OC scaling now correctly compares consecutive outer-iteration wall distances
+      (was always 1 due to the misplaced copies).
+- [x] Replaced all `np.append`-in-loop patterns with preallocated broadcasting
+      or `np.concatenate` in:
+      - `FlowDiverter.cylinder_mesh` (straight and curved paths)
+      - `FlowDiverter.pattern_wrap` (edge segment collection)
+      - All five boundary generators in `geometry/boundaries.py`
+        (`cylinder_bound`, `conical_boundary`, `bent_tube`, `s_curve`,
+        `rugged_cylinder`)
+- [x] Batched KDTree proximity checks: `tree.query(p[:n_active])` replaces N
+      individual `tree.query(point)` calls per iteration.  With OC enabled the
+      total is 3 batch queries per outer iteration (was 3N individual calls).
 - [ ] **Gate:** golden outputs unchanged within tolerance; record before/after
       timings in the PR.
 

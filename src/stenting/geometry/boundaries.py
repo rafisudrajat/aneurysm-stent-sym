@@ -88,13 +88,11 @@ def cylinder_bound(
 
     circ_nodes = _make_ring(R, N, sep_angle, origin, direction)
 
-    dz = height * direction / (Nz - 1)
-    dz = np.array([dz for _ in range(N)])
-
-    nodes = circ_nodes.copy()
-    for i in range(1, Nz):
-        nodes = np.append(nodes, circ_nodes - i * dz, axis=0)
-    nodes += height * direction
+    dz_vec = height * direction / (Nz - 1)                 # single step vector (3,)
+    i_vals = np.arange(Nz)                                  # (Nz,)
+    nodes = (circ_nodes[None, :, :] -
+             i_vals[:, None, None] * dz_vec[None, None, :]).reshape(-1, 3)
+    nodes = nodes + height * direction
 
     if get_inlet_outlet:
         inlet_pts = nodes[:res_ang]
@@ -157,15 +155,13 @@ def conical_boundary(
 
     circ_nodes = _make_ring(Rtop, N, sep_angle, origin, direction)
 
-    Rf = np.linspace(1, Rbottom / Rtop, Nz)
+    Rf = np.linspace(1, Rbottom / Rtop, Nz)                # (Nz,) radial scale per ring
 
-    dz = height * direction / (Nz - 1)
-    dz = np.array([dz for _ in range(N)])
-
-    nodes = circ_nodes.copy()
-    for i in range(1, Nz):
-        nodes = np.append(nodes, Rf[i] * circ_nodes - i * dz, axis=0)
-    nodes += height * direction
+    dz_vec = height * direction / (Nz - 1)
+    i_vals = np.arange(Nz)
+    nodes = (Rf[:, None, None] * circ_nodes[None, :, :] -
+             i_vals[:, None, None] * dz_vec[None, None, :]).reshape(-1, 3)
+    nodes = nodes + height * direction
 
     faces = _build_faces(Nz, N)
     mesh = pv.PolyData(nodes, faces)
@@ -228,15 +224,13 @@ def bent_tube(
     spline_points = centerline.evaluate(t)
     tangents = centerline.tangent(t)
 
-    circ_nodes = np.zeros((N, 3))
-    for i in range(N):
-        circ_nodes[i] = r * np.array([np.sin(i * sep_angle), np.cos(i * sep_angle), 0])
+    angles = np.arange(N) * sep_angle
+    circ_nodes = r * np.column_stack([np.sin(angles), np.cos(angles), np.zeros(N)])
 
-    nodes = np.array([[0, 0, 0]])
-    for i in range(Nz):
-        layer = rotate_layer(spline_points[i], tangents[i], circ_nodes)
-        nodes = np.append(nodes, layer, axis=0)
-    nodes = nodes[1:]
+    nodes = np.concatenate(
+        [rotate_layer(spline_points[i], tangents[i], circ_nodes) for i in range(Nz)],
+        axis=0,
+    )
 
     if get_inlet_outlet:
         inlet_pts = nodes[:res_ang]
@@ -302,15 +296,13 @@ def s_curve(
     spline_points = centerline.evaluate(t)
     tangents = centerline.tangent(t)
 
-    circ_nodes = np.zeros((N, 3))
-    for i in range(N):
-        circ_nodes[i] = r * np.array([np.sin(i * sep_angle), np.cos(i * sep_angle), 0])
+    angles = np.arange(N) * sep_angle
+    circ_nodes = r * np.column_stack([np.sin(angles), np.cos(angles), np.zeros(N)])
 
-    nodes = np.array([[0, 0, 0]])
-    for i in range(Nz):
-        layer = rotate_layer(spline_points[i], tangents[i], circ_nodes)
-        nodes = np.append(nodes, layer, axis=0)
-    nodes = nodes[1:]
+    nodes = np.concatenate(
+        [rotate_layer(spline_points[i], tangents[i], circ_nodes) for i in range(Nz)],
+        axis=0,
+    )
 
     faces = _build_faces(Nz, N)
     mesh = pv.PolyData(nodes, faces)
@@ -376,13 +368,11 @@ def rugged_cylinder(
     rng = np.random.default_rng(seed)
     Rf = 1 - maxVar * (1 - 2 * rng.random(Nz))
 
-    dz = height * direction / (Nz - 1)
-    dz = np.array([dz for _ in range(N)])
-
-    nodes = circ_nodes.copy()
-    for i in range(1, Nz):
-        nodes = np.append(nodes, Rf[i] * circ_nodes - i * dz, axis=0)
-    nodes += height * direction
+    dz_vec = height * direction / (Nz - 1)
+    i_vals = np.arange(Nz)
+    nodes = (Rf[:, None, None] * circ_nodes[None, :, :] -
+             i_vals[:, None, None] * dz_vec[None, None, :]).reshape(-1, 3)
+    nodes = nodes + height * direction
 
     faces = _build_faces(Nz, N)
     mesh = pv.PolyData(nodes, faces)

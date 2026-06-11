@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pyvista as pv
+from scipy.sparse import csr_matrix
 from scipy.spatial import KDTree
 
 from .stent.flow_diverter import FlowDiverter
@@ -137,7 +138,7 @@ class VirtualStenting:
         N = len(self.stent.mesh.points) / Nz
 
         result_mesh = pv.PolyData()
-        result_mesh.points = self.initial_stent.mesh.points
+        result_mesh.points = self.initial_stent.mesh.points.copy()
         result_mesh.lines = self.initial_stent.mesh.lines
 
         if render_gif:
@@ -145,19 +146,26 @@ class VirtualStenting:
                   fname="Deploy.gif" if deployment_name == "" else deployment_name)
 
         con_tol = self.stent.strut_radius + add_tol
-
         tree = KDTree(self.boundary.points)
 
-        def proximity(point: np.ndarray) -> float:
-            """Return distance from *point* to the nearest vessel-wall node."""
-            d, _ = tree.query(point)
-            return d
-
-        connected = self.stent.connected
         p_ref = np.array(self.target_stent.mesh.points)
         p = np.array(result_mesh.points)
-        p_new = p.copy()
-        p_pred = p.copy()
+        n_total = len(p)
+
+        # Precompute spring-constant sparse matrix K (constant throughout deployment).
+        # K[i,j] = 1 / ||p_ref[i] - p_ref[j]||; symmetric.
+        # Spring force on node i: F_i = (K @ p)[i] - kt[i]*p[i] - C[i]
+        edges = self.stent.lines                              # (E, 2)
+        valid = edges[:, 0] != edges[:, 1]                   # drop degenerate self-loops
+        ei, ej = edges[valid, 0], edges[valid, 1]
+        k_vals = 1.0 / np.linalg.norm(p_ref[ej] - p_ref[ei], axis=1)
+        K = csr_matrix(
+            (np.tile(k_vals, 2), (np.r_[ei, ej], np.r_[ej, ei])),
+            shape=(n_total, n_total),
+        )
+        kt_vec = np.asarray(K.sum(axis=1)).ravel()           # (n_total,)
+        C = K @ p_ref - kt_vec[:, None] * p_ref              # (n_total, 3) constant term
+
         p_prev = p.copy()
 
         if step:
@@ -168,39 +176,37 @@ class VirtualStenting:
             layers = [int(fstop * Nz)]
 
         for l in layers:
-            err = np.ones(int(l * N))
+            n_active = int(l * N)
+            err = np.ones(n_active)
             Niter = 0
 
             while max(err) > tol and Niter < max_iter:
-                for i in range(int(l * N)):
-                    F = 0
-                    kt = 0
-                    for j in connected[i]:
-                        k = 1 / np.linalg.norm(p_ref[j] - p_ref[i])
-                        F += k * ((p[j] - p[i]) - (p_ref[j] - p_ref[i]))
-                        kt += k
+                # Vectorized spring force for all active nodes — O(E) sparse matvec.
+                F = (K[:n_active] @ p) - kt_vec[:n_active, None] * p[:n_active] - C[:n_active]
 
-                    if OC:
-                        F *= proximity(p[i]) / proximity(p_prev[i])
+                if OC:
+                    # Batch wall-distance queries; scale force by current/prev ratio.
+                    d_curr, _ = tree.query(p[:n_active])
+                    d_prev_arr, _ = tree.query(p_prev[:n_active])
+                    F *= (d_curr / np.maximum(d_prev_arr, 1e-12))[:, None]
 
-                    p_pred[i] = p[i] + alpha * F / kt
+                p_cand = p[:n_active] + alpha * F / kt_vec[:n_active, None]
 
-                    if proximity(p_pred[i]) > con_tol:
-                        p_new[i] = p_pred[i]
+                # Batch contact check; only accept moves that stay clear of wall.
+                d_cand, _ = tree.query(p_cand)
+                moved_idx = np.where(d_cand > con_tol)[0]
 
-                    err[i] = np.linalg.norm(p_new[i] - p[i])
-                    # NOTE: these copies are inside the per-node loop → O(N²) cost.
-                    # Performance fix deferred to Phase 4 (REFACTOR_PLAN.md §4).
-                    p_prev = p.copy()
-                    p = p_new.copy()
+                p_prev[:] = p                     # save pre-update state for next OC
+                p[moved_idx] = p_cand[moved_idx]  # in-place Jacobi update
 
+                err = np.linalg.norm(p[:n_active] - p_prev[:n_active], axis=1)
                 Niter += 1
 
             if verbose:
                 print(l, Niter, max(err))
 
             if render_gif:
-                result_mesh.points = p
+                result_mesh.points = p.copy()
                 frame(mesh=result_mesh)
 
         if render_gif:
