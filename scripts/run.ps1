@@ -2,20 +2,23 @@
 #
 # Usage:
 #   .\scripts\run.ps1 "experiment\experiment 0"
-#   .\scripts\run.ps1 "experiment\experiment 0" --clean
+#   .\scripts\run.ps1 "experiment\experiment 0" -Clean
+#   .\scripts\run.ps1 "experiment\experiment 0" -SingleStent
 #
 # Requires uv to be installed. See README for setup instructions.
 
 param(
     [string]$ExperimentDir = "experiment\experiment 0",
-    [switch]$Clean
+    [switch]$Clean,
+    [switch]$SingleStent
 )
 
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
-$args_list = @("run", "python", "run.py", "--experiment_dir", $ExperimentDir)
 if ($Clean) {
-    $args_list += "--clean"
+    uv run stenting clean $ExperimentDir
+} elseif ($SingleStent) {
+    uv run stenting run $ExperimentDir --single-stent
+} else {
+    uv run stenting run $ExperimentDir
 }
-
-& uv @args_list

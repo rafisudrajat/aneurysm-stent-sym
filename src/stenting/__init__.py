@@ -1,8 +1,4 @@
-"""stenting — Fast Virtual Stenting simulation package.
-
-Public API mirrors the original flat-module API so that ``import stenting``
-can replace ``import PyStenting`` and ``from Utils import *`` in one step.
-"""
+"""stenting — Fast Virtual Stenting simulation package."""
 
 from .centerline import VascCenterline, points2lines
 from .config import ExperimentConfig, load_config
