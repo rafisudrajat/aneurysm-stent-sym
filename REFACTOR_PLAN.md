@@ -141,18 +141,24 @@ Goal: the existing pipeline runs unchanged in behaviour on Linux via one command
       replaces `cleanSym.cmd` using `shutil.rmtree`.
 - [ ] **Gate:** golden test reproduces Phase 0 outputs on Linux.
 
-### Phase 2 — Package the core (no behaviour change, ~2-3 days)
+### Phase 2 — Package the core (no behaviour change, ~2-3 days) ✅
 Goal: turn flat scripts into the `src/stenting/` package in section 3.
-- [ ] Move `rotate_layer` → `geometry/transforms.py`. Remove the
-      `Utils → PyStenting` back-import.
-- [ ] Split `PyStenting.py`: `FlowDiverter`+adjacency → `stent/flow_diverter.py`;
-      `render_strut` → `stent/render.py` (**fix the `:433` bug** here);
-      patterns → `stent/patterns.py`; `VascCenterline` → `centerline.py`;
-      `VirtualStenting` → `simulation.py`; GIF helper → `io.py` (no module global).
-- [ ] Extract the duplicated circle/stack/faces boilerplate from `Utils.py` into
-      `geometry/cylinder.py`; rewrite the 5 boundary generators on top of it.
-- [ ] Replace all `from x import *` with explicit imports; define `__all__`.
-- [ ] **Gate:** golden tests still pass; `import stenting` works.
+- [x] Moved `rotate_layer` → `src/stenting/geometry/transforms.py`. Removed
+      the `Utils → PyStenting` back-import.
+- [x] Split `PyStenting.py`: `FlowDiverter` → `stent/flow_diverter.py`;
+      `render_strut` → `stent/render.py` (**`:433` bug fixed** — corrected
+      misplaced parenthesis in `np.ones` call); patterns → `stent/patterns.py`;
+      `VascCenterline` → `centerline.py`; `VirtualStenting` → `simulation.py`;
+      GIF helper → `io.py` (lazy `_plotter`, no module-level init).
+- [x] Extracted shared ring/face builders from `Utils.py` into
+      `geometry/cylinder.py` (`_make_ring`, `_build_faces`); rewrote the 5
+      boundary generators in `geometry/boundaries.py` on top of those helpers.
+      Removed debug prints from `cylinder_bound`.
+- [x] Replaced all `from x import *` with explicit imports in driver scripts;
+      defined `__all__` in every new module.  `PyStenting.py` and `Utils.py`
+      kept as thin re-export shims for backward compatibility.
+- [x] `pyproject.toml` updated to `where = ["src"]`; `import stenting` works.
+- [ ] **Gate:** golden test reproduces Phase 0 outputs on Linux.
 
 ### Phase 3 — Config + CLI + pipeline (~2 days)
 - [ ] Define a typed config schema in `config.py` (dataclasses or `pydantic`),

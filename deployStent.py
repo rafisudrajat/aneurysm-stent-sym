@@ -21,7 +21,6 @@ import time
 from pathlib import Path
 
 import PyStenting as ps
-from Utils import *
 
 
 def _parse_config(dir_path: str, pos: str) -> tuple[str, str, dict, dict, dict | bool]:
