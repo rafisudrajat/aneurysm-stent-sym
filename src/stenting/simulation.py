@@ -7,8 +7,8 @@ import pyvista as pv
 from scipy.sparse import csr_matrix
 from scipy.spatial import KDTree
 
-from .stent.flow_diverter import FlowDiverter
 from .centerline import VascCenterline
+from .stent.flow_diverter import FlowDiverter
 
 __all__ = ["VirtualStenting"]
 
@@ -175,8 +175,8 @@ class VirtualStenting:
         else:
             layers = [int(fstop * Nz)]
 
-        for l in layers:
-            n_active = int(l * N)
+        for layer in layers:
+            n_active = int(layer * N)
             err = np.ones(n_active)
             Niter = 0
 
@@ -203,7 +203,7 @@ class VirtualStenting:
                 Niter += 1
 
             if verbose:
-                print(l, Niter, max(err))
+                print(layer, Niter, max(err))
 
             if render_gif:
                 result_mesh.points = p.copy()

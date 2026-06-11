@@ -1,7 +1,6 @@
 """Tests for rotate_layer (stenting.geometry.transforms)."""
 
 import numpy as np
-import pytest
 
 from stenting.geometry.transforms import rotate_layer
 
